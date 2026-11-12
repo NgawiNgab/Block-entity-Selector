@@ -65,6 +65,12 @@ xmake -y
 Outputs `libBlockEntitySelector.so` and `BlockEntitySelector.levipack` in
 `build/android/arm64-v8a/release/`.
 
+The first build resolves the preloader SDK, `fmt` and `nlohmann/json`, then pins them into
+`xmake-requires.lock` — commit that file to make later builds reproducible.
+
+`--entry-name` on the packaging script keeps the manifest's `entry` field in sync with the library
+name the launcher expects; it is wired up in `xmake.lua` already.
+
 Host-side unit tests (no Android toolchain needed):
 
 ```sh
@@ -120,10 +126,11 @@ The signature table in `resources/signatures.json` is data, not code: the patter
 from BedrockTools, which publishes them under its own terms. Regenerate them with Zaphkiel for your
 own build if you plan to redistribute.
 
-Status: passes host-side verification (all translation units compile cleanly, the `.so` links and
-exports `PLGetModRegistration`, `.levipack` packaging round-trips) but has **not** been run against a
-real 1.26.6x install yet — the bundled signature patterns are seeded from BedrockTools and are the
-first thing to regenerate with Zaphkiel. See `docs/UPDATING.md`.
+Status: the Android arm64 build and the host test suite run in CI on every push, producing a real
+`libBlockEntitySelector.so` and `BlockEntitySelector.levipack`. It has **not** been run against a
+real 1.26.6x install yet, so the runtime side is unverified: the bundled signature patterns are
+seeded from BedrockTools and are the first thing to regenerate with Zaphkiel. See
+`docs/UPDATING.md`.
 
 **Disclaimer:** not affiliated with Mojang or Microsoft. Use at your own risk and in line with
 Minecraft's terms of service; client-side visual mods can still be against the rules of individual

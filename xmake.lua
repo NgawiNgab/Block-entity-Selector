@@ -1,4 +1,8 @@
 add_rules("mode.debug", "mode.release")
+
+-- Pins dependency versions into xmake-requires.lock on the first successful
+-- build. The generated file is worth committing; it is not shipped pre-made
+-- because the commit hashes it records come from the machine that resolved them.
 set_policy("package.requires_lock", true)
 
 -- The preloader SDK supplies the mod lifecycle macros, the hook engine, the
