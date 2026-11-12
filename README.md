@@ -16,10 +16,12 @@ only on your client. Nothing is sent to the server, nothing is modified in the w
 
 - Tap **SEL** (the on-screen button) to cycle the selection:
   entity under the crosshair → block under your feet → cleared.
-- The module keybind clears the selection instantly.
+- The keybind clears an active selection; with nothing selected it toggles highlighting on or off.
 - Block scans walk outward from the player in a resumable cursor, a fixed number of lookups per
   tick, so a long radius does not spike frame time.
 - Entity scans reuse the game's actor list, so they are always complete and always current.
+- Blocks, mobs and players each get their own colour; players can be excluded entirely, and the
+  translucent fill is off by default (outline only).
 
 ## How it works
 
@@ -46,8 +48,10 @@ game build never requires recompiling: run Zaphkiel, convert its output, drop th
 4. In game, open the Mod Menu → **Block / Entity Selector** → enable.
 5. Tap **SEL**, or use the keybind.
 
-If the highlight does not appear, open **Dump Diagnostics** in the module menu: the report lists
-which signatures resolved, which offsets were confirmed, and what the picker saw.
+If the highlight does not appear, open **Dump Diagnostics** in the module menu. The report lists
+which signatures resolved, which offsets were confirmed and by what evidence, the live scan
+settings, how many matches were found, and which actor classes actually matched — which is what
+tells "nothing near you" apart from "the offsets are wrong".
 
 ## Building
 
@@ -64,8 +68,11 @@ Outputs `libBlockEntitySelector.so` and `BlockEntitySelector.levipack` in
 Host-side unit tests (no Android toolchain needed):
 
 ```sh
-./tools/run_tests.sh          # needs g++ + nlohmann-json3-dev
+./tools/run_tests.sh          # needs g++ + nlohmann-json3-dev, python3
 ```
+
+The suite covers RTTI typeinfo-name parsing, AABB/ray maths, colour handling, profile
+loading/merging, the block-scan cursor, and the Zaphkiel converter end to end.
 
 ## Retargeting to a new game build
 
@@ -92,7 +99,7 @@ src/selection/        selection state + world scanner
 src/render/           highlight renderer + GL state
 src/modules/          the user-facing module (config + menu registration)
 src/launcher/         on-screen picker button
-resources/            signatures.json (the retargeting surface), font
+resources/            signatures.json — the retargeting surface
 tools/zaphkiel/       Zaphkiel target list + output converter
 tools/                run_tests.sh
 tests/                host unit tests
@@ -112,6 +119,11 @@ MIT. See [LICENSE](LICENSE).
 The signature table in `resources/signatures.json` is data, not code: the pattern strings were taken
 from BedrockTools, which publishes them under its own terms. Regenerate them with Zaphkiel for your
 own build if you plan to redistribute.
+
+Status: passes host-side verification (all translation units compile cleanly, the `.so` links and
+exports `PLGetModRegistration`, `.levipack` packaging round-trips) but has **not** been run against a
+real 1.26.6x install yet — the bundled signature patterns are seeded from BedrockTools and are the
+first thing to regenerate with Zaphkiel. See `docs/UPDATING.md`.
 
 **Disclaimer:** not affiliated with Mojang or Microsoft. Use at your own risk and in line with
 Minecraft's terms of service; client-side visual mods can still be against the rules of individual

@@ -260,6 +260,26 @@ std::string Runtime::dumpDiagnostics() {
     report << "last draw vertices: " << render::HighlightRenderer::get().lastDrawVertices() << '\n';
     report << "selector enabled: " << (modules::SelectorModule::get().enabled() ? "yes" : "no") << '\n';
     report << "target: " << modules::SelectorModule::get().targetLabel() << '\n';
+
+    // Scan state is what distinguishes "nothing found yet" from "nothing can be
+    // found": a full pass with zero matches is a real answer.
+    const auto& scanner = selection::Scanner::get();
+    const auto settings = scanner.settings();
+    const auto targets = scanner.targets();
+    report << "scan: blocks=" << (settings.scanBlocks ? "on" : "off") << " entities="
+           << (settings.scanEntities ? "on" : "off") << " players=" << (settings.includePlayers ? "yes" : "no")
+           << " radius=" << settings.radius << " vertical=" << settings.verticalRadius
+           << " entityRange=" << settings.entityRange << '\n';
+    report << "matches: " << targets.blocks.size() << " block(s), " << targets.entityBoxes.size()
+           << " entity box(es)\n";
+
+    const auto matched = selection::Selection::get().matchedClasses();
+    if (!matched.empty()) {
+        report << "matched classes:";
+        for (const auto& name : matched) report << ' ' << name;
+        report << '\n';
+    }
+
     report << '\n' << log::takeReport();
 
     const auto path = mDataDirectory / "diagnostics.txt";

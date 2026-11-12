@@ -109,10 +109,8 @@ void World::update(void* localPlayer, const Vec3& cameraPosition) {
         return;
     }
 
-    const auto stateVector = sdk::fieldPointer(localPlayer, resolver.offset(OffId::ActorStateVector));
-    if (sdk::plausiblePointer(stateVector)) {
-        mSnapshot.playerPosition = *reinterpret_cast<Vec3*>(stateVector);
-    }
+    // Player position comes from the state-vector probe above, so a rejected
+    // offset cannot leave the snapshot with a garbage position.
 
     // Dimension -> BlockSource candidate offsets from the profile, validated by
     // the fact that the block source must expose a readable dimension id.
@@ -177,13 +175,20 @@ void World::probeOffsets(void* localPlayer) {
         }
     }
 
-    if (!mProbedAabb) {
+    if (!mProbedAabb && localPlayer) {
         mProbedAabb = true;
         for (const auto& candidate : Profile::get().candidates(OffId::ActorAabbComponent)) {
             const auto component = sdk::fieldPointer(localPlayer, candidate.value);
             if (!sdk::plausiblePointer(component)) continue;
             const auto* bounds = reinterpret_cast<const sdk::AABB*>(component);
             if (!bounds->valid()) continue;
+            // A real hitbox is small and sits on the player: anything taller than
+            // a few blocks or far from the player's feet is some other struct.
+            const auto extent = bounds->extent();
+            if (!extent.finite() || extent.y < 0.5f || extent.y > 8.f) continue;
+            if (extent.x < 0.05f || extent.z < 0.05f || extent.x > 8.f || extent.z > 8.f) continue;
+            const auto center = bounds->center();
+            if ((center - mSnapshot.playerPosition).length() > 16.f) continue;
             resolver.confirmOffset(OffId::ActorAabbComponent, candidate.value, candidate.origin);
             break;
         }

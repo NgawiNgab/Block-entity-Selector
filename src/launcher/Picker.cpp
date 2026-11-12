@@ -18,8 +18,10 @@ namespace {
 
 constexpr const char* kButtonId = "blockentityselector.select";
 
-/// How far ahead the crosshair ray reaches when picking an entity.
-constexpr float kPickDistance = 64.f;
+/// Upper bound for the crosshair ray, clamped by the configured entity range so
+/// the picker can never grab something the scanner would refuse to highlight.
+constexpr float kMaxPickDistance = 128.f;
+constexpr float kMinPickDistance = 8.f;
 
 } // namespace
 
@@ -70,13 +72,16 @@ std::string Picker::pickEntityAtCrosshair() {
     const auto origin = snapshot.cameraPosition;
     const auto direction = snapshot.lookDirection;
 
+    const auto range = std::clamp(selection::Scanner::get().settings().entityRange, kMinPickDistance,
+                                 kMaxPickDistance);
+
     const auto actors = world.actors();
     std::string bestClass;
-    float bestDistance = kPickDistance;
+    float bestDistance = range;
 
     for (const auto& actor : actors) {
         if (!actor.bounds.valid()) continue;
-        if (!actor.bounds.expanded(0.15f).intersectsRay(origin, direction, kPickDistance)) continue;
+        if (!actor.bounds.expanded(0.15f).intersectsRay(origin, direction, range)) continue;
         const auto center = actor.bounds.center();
         const float distance = (center - origin).length();
         if (distance < bestDistance) {
@@ -107,6 +112,9 @@ void Picker::pickUnderCrosshair() {
     if (!selector.enabled()) {
         core::log::info("picker: module is off, enabling it");
         selector.setEnabled(true);
+        // Reflect the change in the launcher's toggle, which the picker changed
+        // outside of the menu.
+        pl::modmenu::setModuleEnabled(selector.moduleId(), true);
     }
 
     auto& selection = selection::Selection::get();
@@ -117,7 +125,7 @@ void Picker::pickUnderCrosshair() {
 
     // Cycle: entity -> block -> clear, skipping whichever is unavailable.
     if (!entityClass.empty() && !(current.kind == selection::Kind::Entity && current.id == entityClass)) {
-        selection::Selection::get().toggleEntity(entityClass, entityClass);
+        selection.toggleEntity(entityClass, entityClass);
         selection::Scanner::get().reset();
         core::log::info("picker: entity " + entityClass);
         return;

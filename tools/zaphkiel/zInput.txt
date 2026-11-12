@@ -31,12 +31,17 @@ findclass<ScreenContext>
 
 /* --- 3. Struct offsets -------------------------------------------------- */
 /* Each of these has a matching "offsets" key in signatures.json.         */
-/* struct<Actor><0x228>        -> actor_state_vector                      */
-/* struct<Actor><0x1F0>        -> actor_level                             */
-/* struct<Actor><0x1E0>        -> actor_dimension                         */
-/* struct<Level><0x478>        -> level_actor_manager                     */
-/* struct<LevelRenderer><0x430>-> level_renderer_player                   */
-/* struct<ScreenContext><0xB0> -> screen_context_tessellator              */
+/* struct<Actor><0x228>             -> actor_state_vector                 */
+/* struct<Actor><0x230>             -> actor_aabb_component               */
+/* struct<Actor><0x1F0>             -> actor_level                        */
+/* struct<Actor><0x1E0>             -> actor_dimension                    */
+/* struct<Dimension><0xD0>          -> dimension_block_source             */
+/* struct<Level><0x478>             -> level_actor_manager                */
+/* struct<LevelRenderer><0x430>     -> level_renderer_player              */
+/* struct<LevelRendererPlayer><0x614>-> level_renderer_player_cam_pos     */
+/* struct<ClientInstance><0x90>     -> client_instance_level_renderer     */
+/* struct<ScreenContext><0xB0>      -> screen_context_tessellator         */
+/* struct<ScreenContext><0x30>      -> screen_context_color_holder        */
 
 /* Once you know the real offset for a field, run the targeted scan so the
    hit count confirms it, for example: */
@@ -46,7 +51,12 @@ struct<Actor><0x228>
 /* The actor list is the backbone of entity highlighting.                 */
 struct<ActorManager><0x8>
 
-/* --- 5. Sanity check that the class names used by the UI still exist ---- */
+/* --- 5. Dimension -> block source -------------------------------------- */
+/* The only offset whose failure is completely silent: a wrong block source
+   just returns no blocks, so confirm it by reading getDimensionId().      */
+struct<Dimension><0xD0>
+
+/* --- 6. Sanity check that the class names used by the UI still exist ---- */
 findclass<Zombie>
 findclass<Player>
 findclass<ItemActor>

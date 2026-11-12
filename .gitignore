@@ -9,3 +9,5 @@ compile_commands.json
 *.zip
 *.o
 diagnostics.txt
+__pycache__/
+*.pyc

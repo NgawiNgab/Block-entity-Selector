@@ -52,6 +52,7 @@ def write_package(
     profiles: Path,
     version_header: Path,
     output: Path,
+    entry_name: str | None = None,
 ) -> None:
     for path, label in (
         (library, "Library"),
@@ -62,8 +63,10 @@ def write_package(
         if not path.is_file():
             raise FileNotFoundError(f"{label} not found: {path}")
 
-    # The manifest entry must match the .so name produced by the build.
-    library_name = library.name
+    # The manifest entry must match the .so name produced by the build. Renaming
+    # here keeps the manifest honest when the build output has a different name
+    # (for example a CI artifact such as libBlockEntitySelector.so.debug).
+    library_name = entry_name or library.name
     manifest = build_manifest(parse_version(version_header), library_name)
 
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -100,6 +103,11 @@ def main() -> int:
     parser.add_argument("--profiles", required=True, type=Path)
     parser.add_argument("--version-header", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--entry-name",
+        help="Name the library gets inside the package (defaults to the file's own name). "
+        "Use this when the built .so is not already called libBlockEntitySelector.so.",
+    )
     args = parser.parse_args()
     try:
         write_package(
@@ -108,6 +116,7 @@ def main() -> int:
             args.profiles.resolve(),
             args.version_header.resolve(),
             args.output.resolve(),
+            args.entry_name,
         )
     except Exception as error:  # noqa: BLE001 - surfaced to the build log
         print(error, file=sys.stderr)

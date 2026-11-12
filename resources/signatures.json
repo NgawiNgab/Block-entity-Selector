@@ -132,6 +132,22 @@
         }
       ]
     },
+    "client_instance_level_renderer": {
+      "candidates": [
+        {
+          "offset": "0x90",
+          "note": "ClientInstance::mLevelRenderer (candidate; validated by a readable vtable)"
+        },
+        {
+          "offset": "0x88",
+          "note": "fallback"
+        },
+        {
+          "offset": "0xA0",
+          "note": "fallback"
+        }
+      ]
+    },
     "screen_context_tessellator": {
       "candidates": [
         {

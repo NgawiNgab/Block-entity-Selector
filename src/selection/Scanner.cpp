@@ -18,50 +18,6 @@ constexpr std::size_t kBlockLookupBudget = 512;
 constexpr std::size_t kMaxBlockTargets = 4096;
 }
 
-Scanner& Scanner::get() {
-    static Scanner instance;
-    return instance;
-}
-
-void Scanner::setSettings(const Settings& settings) {
-    {
-        std::lock_guard lock(mSettingsMutex);
-        if (settings.scanBlocks == mSettings.scanBlocks && settings.scanEntities == mSettings.scanEntities &&
-            settings.includePlayers == mSettings.includePlayers &&
-            settings.radius == mSettings.radius && settings.verticalRadius == mSettings.verticalRadius &&
-            settings.entityRange == mSettings.entityRange) {
-            return;
-        }
-        mSettings = settings;
-    }
-    // A radius change invalidates the walk cursor so the next pass starts clean.
-    std::lock_guard lock(mMutex);
-    mCursorValid = false;
-    mBlocks.clear();
-    mTargets.blocks.clear();
-    mDirty = true;
-}
-
-Scanner::Settings Scanner::settings() const {
-    std::lock_guard lock(mSettingsMutex);
-    return mSettings;
-}
-
-void Scanner::reset() {
-    std::lock_guard lock(mMutex);
-    mBlocks.clear();
-    mTargets.blocks.clear();
-    mTargets.entityBoxes.clear();
-    mTargets.entityIsPlayer.clear();
-    mCursorValid = false;
-    mDirty = true;
-}
-
-FrameTargets Scanner::targets() const {
-    std::lock_guard lock(mMutex);
-    return mTargets;
-}
-
 bool Scanner::update(const world::Snapshot& snapshot, std::uint64_t nowMs) {
     auto& selectionStore = Selection::get();
     const auto target = selectionStore.current();
@@ -74,17 +30,25 @@ bool Scanner::update(const world::Snapshot& snapshot, std::uint64_t nowMs) {
             mTargets.entityBoxes.clear();
             mTargets.entityIsPlayer.clear();
             mBlocks.clear();
-            mCursorValid = false;
+            mCursor.invalidate();
         }
         return hadAnything;
     }
 
-    // Dimension changes invalidate cached block results.
+    // Track the dimension the current block cache belongs to. Comparing against
+    // a value stored here (not against the selection) is what makes this fire
+    // exactly once per dimension change; the first pass only records it.
     {
         std::lock_guard lock(mMutex);
-        if (snapshot.dimensionId != 0 && target.dimensionId != snapshot.dimensionId) {
+        if (mBlockDimension < 0) {
+            mBlockDimension = snapshot.dimensionId;
+        } else if (mBlockDimension != snapshot.dimensionId) {
+            mBlockDimension = snapshot.dimensionId;
             mBlocks.clear();
-            mCursorValid = false;
+            mTargets.blocks.clear();
+            mCursor.invalidate();
+            mProgressReported = false;
+            mDirty = true;
         }
     }
 
@@ -109,7 +73,12 @@ bool Scanner::update(const world::Snapshot& snapshot, std::uint64_t nowMs) {
     }
 
     const auto added = scanBlocks(snapshot, target, kBlockLookupBudget);
-    return added > 0 || hadEntities || mDirty;
+    bool dirty = false;
+    {
+        std::lock_guard lock(mMutex);
+        dirty = mDirty;
+    }
+    return added > 0 || hadEntities || dirty;
 }
 
 void Scanner::scanEntities(const world::Snapshot& snapshot, const Target& target, std::uint64_t nowMs) {
@@ -200,23 +169,18 @@ std::size_t Scanner::scanBlocks(const world::Snapshot& snapshot, const Target& t
     const int centerY = static_cast<int>(std::floor(snapshot.playerPosition.y));
     const int centerZ = static_cast<int>(std::floor(snapshot.playerPosition.z));
 
-    const int minY = std::max(centerY - vertical, snapshot.minHeight);
-    const int maxY = std::min(centerY + vertical, snapshot.maxHeight);
+    if (!mCursor.active()) {
+        mCursor.reset(centerX, centerY, centerZ, radius, vertical, snapshot.minHeight, snapshot.maxHeight);
+        // A build-limit clamp can make the box empty; report rather than spin.
+        if (!mCursor.active()) return 0;
+    }
 
     std::size_t lookups = 0;
     std::size_t newMatches = 0;
     std::vector<BlockEntry> found;
 
-    while (lookups < budget) {
-        if (!mCursorValid) {
-            mCursor = {centerX - radius, minY, centerZ - radius};
-            mCursorValid = true;
-        }
-
-        // One lookup per iteration; the cursor walks Y fastest so a vertical
-        // column is finished before moving to the next XZ cell (cache friendly
-        // for the game and keeps partial results visually coherent).
-        bes::sdk::BlockPos pos = mCursor;
+    while (lookups < budget && mCursor.active()) {
+        const sdk::BlockPos pos = mCursor.position();
         const std::string name = world.blockName(blockSource, pos);
         ++lookups;
 
@@ -228,17 +192,7 @@ std::size_t Scanner::scanBlocks(const world::Snapshot& snapshot, const Target& t
             ++newMatches;
         }
 
-        // Advance cursor.
-        if (++mCursor.y > maxY - 1) {
-            mCursor.y = minY;
-            if (++mCursor.z > centerZ + radius) {
-                mCursor.z = centerZ - radius;
-                if (++mCursor.x > centerX + radius) {
-                    mCursorValid = false; // full pass done
-                    break;
-                }
-            }
-        }
+        mCursor.advance();
     }
 
     {
@@ -257,9 +211,15 @@ std::size_t Scanner::scanBlocks(const world::Snapshot& snapshot, const Target& t
             mTargets.blocks.clear();
             mTargets.blocks.reserve(mBlocks.size());
             for (const auto& entry : mBlocks) mTargets.blocks.push_back(entry.pos);
-            mTargets.anchor = bes::sdk::BlockPos::fromCorner(snapshot.playerPosition);
+            mTargets.anchor = sdk::BlockPos::fromCorner(snapshot.playerPosition);
             mTargets.hasAnchor = true;
             mDirty = false;
+        }
+        // Progress reporting: a finished pass is a state change even when it
+        // matched nothing, and so is learning a single new match.
+        if (!mCursor.active() && !mProgressReported) {
+            mProgressReported = true;
+            mDirty = true;
         }
     }
 

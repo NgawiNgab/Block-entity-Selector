@@ -113,7 +113,22 @@ struct Color {
                 static_cast<float>((argb >> 24) & 0xFF) / 255.f};
     }
 
-    Color withAlpha(float alpha) const { return {r, g, b, alpha}; }
+    /// Returns the same colour with a new alpha, clamped to [0, 1] so a bad
+    /// config value cannot produce an invisible or over-bright highlight.
+    Color withAlpha(float alpha) const {
+        const float clamped = alpha < 0.f ? 0.f : (alpha > 1.f ? 1.f : alpha);
+        return {r, g, b, clamped};
+    }
+
+    /// Packs back into 0xAARRGGBB, rounding rather than truncating so a value
+    /// that came from `fromArgb` survives a round trip.
+    std::uint32_t toArgb() const {
+        const auto toByte = [](float value) {
+            const float clamped = value < 0.f ? 0.f : (value > 1.f ? 1.f : value);
+            return static_cast<std::uint32_t>(clamped * 255.f + 0.5f);
+        };
+        return (toByte(a) << 24) | (toByte(r) << 16) | (toByte(g) << 8) | toByte(b);
+    }
 };
 
 inline bool AABB::intersectsRay(const Vec3& origin, const Vec3& direction, float maxDistance) const {

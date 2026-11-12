@@ -47,15 +47,27 @@ OFFSET_HINTS: dict[str, tuple[str, ...]] = {
     "screen_context_tessellator": ("ScreenContext::mTessellator",),
     "screen_context_color_holder": ("ScreenContext::mColorHolder",),
     "actor_state_vector": ("Actor::mStateVectorComponent",),
-    "actor_aabb_component": ("Actor::mStateVectorComponent + 8",),
+    "actor_aabb_component": ("Actor::mAABBShape", "Actor::mStateVectorComponent + 8"),
     "actor_level": ("Actor::mLevel",),
     "actor_dimension": ("Actor::mDimension",),
+    "dimension_block_source": ("Dimension::mBlockSource", "BlockSource"),
     "level_actor_manager": ("Level::mActorManager",),
 }
 
-# "0x6eb30f7440  0xc61ad30" style lines, plus the "slot[N] ... @ 0x..." form.
-ADDRESS_LINE = re.compile(r"^\s*(?P<label>[A-Za-z0-9_:<>\- ]+?)\s*(?:@|=|->)?\s*0x(?P<addr>[0-9a-fA-F]{6,16})\s*$")
-OFFSET_LINE = re.compile(r"offset\s*\+?0x(?P<value>[0-9a-fA-F]+)\s*(?:[—\-]+|:)?\s*(?P<label>.*)$")
+# Zaphkiel prints one target per block:
+#
+#   fn=0xc61ad30  LevelRenderer::renderLevel(LevelRendererPlayer&, ScreenContext&)
+#     sig: 3F 23 03 D1 F8 5F 01 A9 ...
+#     offset +0x430  LevelRenderer::mLevelRendererPlayer
+#
+# so the function header, the pattern and the offsets are three separate shapes.
+FUNCTION_LINE = re.compile(r"^(?:fn|add|vft|struct|findclass|strfn|entt)\s*=\s*0x(?P<addr>[0-9a-fA-F]+)\s*(?P<label>.*)$")
+SIG_LINE = re.compile(r"^sig\s*:\s*(?P<pattern>[0-9a-fA-F?][0-9a-fA-F? ]{7,})$")
+OFFSET_LINE = re.compile(r"^offset\s*\+?0x(?P<value>[0-9a-fA-F]+)\s*(?:[—\-]+|:)?\s*(?P<label>.*)$")
+# Address-only echoes: "0x8a3f20  LevelRenderer::renderLevel" and the progress
+# line form "[+] LevelRenderer::renderLevel -> 0x8a3f20".
+ADDRESS_LINE = re.compile(r"^0x(?P<addr>[0-9a-fA-F]{6,16})\s+(?P<label>[A-Za-z0-9_:<>~ ]+)$")
+PROGRESS_LINE = re.compile(r"^(?:\[[^\]]*\]\s*)?(?P<label>[A-Za-z0-9_:<>~ ]+?)\s*(?:->|@|=)\s*0x(?P<addr>[0-9a-fA-F]{4,16})$")
 
 
 def load_json(path: Path | None) -> dict:
@@ -91,20 +103,32 @@ def collect_from_analysis(path: Path) -> tuple[dict[str, list[str]], dict[str, l
         if not line:
             continue
 
-        if line.startswith("fn=") or line.startswith("[") or "====" in line:
-            key = match_hint(line, SIGNATURE_HINTS)
-            current_key = key
-            if key:
-                notes.append(f"section -> {key}: {line[:100]}")
+        # A new target starts here: remember which JSON key it belongs to so a
+        # following "sig:" line can be attributed even when the pattern itself
+        # carries no label.
+        function_match = FUNCTION_LINE.match(line)
+        if function_match:
+            current_key = match_hint(function_match.group("label"), SIGNATURE_HINTS)
+            if current_key:
+                notes.append(f"target {current_key} -> {function_match.group('label')[:80]}")
             continue
 
-        if "sig" in line.lower() and ":" in line:
-            key = match_hint(line, SIGNATURE_HINTS) or current_key
-            pattern = re.search(r"([0-9a-fA-F?][0-9a-fA-F? ]{15,})", line)
-            if key and pattern:
-                patterns.setdefault(key, []).append(pattern.group(1).strip())
+        address_match = ADDRESS_LINE.match(line) or PROGRESS_LINE.match(line)
+        if address_match:
+            current_key = match_hint(address_match.group("label"), SIGNATURE_HINTS) or current_key
+            continue
 
-        offset_match = OFFSET_LINE.search(line)
+        if line.startswith("[") or set(line) <= {"=", "-"}:
+            continue
+
+        sig_match = SIG_LINE.match(line)
+        if sig_match:
+            key = current_key or match_hint(line, SIGNATURE_HINTS)
+            if key:
+                patterns.setdefault(key, []).append(sig_match.group("pattern").strip())
+            continue
+
+        offset_match = OFFSET_LINE.match(line)
         if offset_match:
             key = match_hint(offset_match.group("label"), OFFSET_HINTS) or match_hint(line, OFFSET_HINTS)
             if key:
@@ -154,15 +178,30 @@ def merge(base: dict, patterns: dict[str, list[str]], offsets: dict[str, list[st
             existing = {"candidates": [existing]}
         old = existing.get("candidates", []) if isinstance(existing, dict) else []
         # Freshly generated patterns win: they match the build being profiled.
-        result["signatures"][key] = {"candidates": candidates + [c for c in old if c not in candidates]}
+        # Older entries with the same pattern text are dropped rather than kept
+        # with their old note, so a re-run does not double the list.
+        seen = {candidate["pattern"] for candidate in candidates}
+        kept = [c for c in old if isinstance(c, dict) and c.get("pattern") not in seen]
+        result["signatures"][key] = {"candidates": candidates + kept}
 
     for key, found in offsets.items():
         candidates = [{"offset": value, "note": "zaphkiel"} for value in dict.fromkeys(found)]
         if not candidates:
             continue
         existing = result["offsets"].get(key, {})
+        if isinstance(existing, str):
+            existing = {"candidates": [existing]}
         old = existing.get("candidates", []) if isinstance(existing, dict) else []
-        result["offsets"][key] = {"candidates": candidates + [c for c in old if c not in candidates]}
+        # Same dedupe rule, keyed on the numeric value (case-insensitive).
+        # When Zaphkiel confirms a value the profile already had, keep the old
+        # note: it carries the struct/member name, which is what the diagnostics
+        # dump shows and what a human reads.
+        notes = {str(c.get("offset", "")).upper(): c.get("note", "") for c in old if isinstance(c, dict)}
+        merged = [{"offset": candidate["offset"], "note": notes.get(str(candidate["offset"]).upper(), candidate["note"])}
+                  for candidate in candidates]
+        seen = {str(candidate["offset"]).upper() for candidate in candidates}
+        kept = [c for c in old if isinstance(c, dict) and str(c.get("offset", "")).upper() not in seen]
+        result["offsets"][key] = {"candidates": merged + kept}
 
     if game_version:
         result["game_version"] = game_version

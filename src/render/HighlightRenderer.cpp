@@ -73,7 +73,13 @@ using GetMaterialFn = MaterialPtr (*)(void*, const HashedString*);
 
 void* gMaterialGroup = nullptr;
 MaterialPtr gSelectionMaterial;
+/// False until a material is acquired. A failed lookup is retried from the next
+/// frame (throttled) instead of being cached as a permanent failure: the world
+/// may not exist yet the first time renderLevel runs.
 bool gMaterialResolved = false;
+/// Frames remaining before a failed lookup is attempted again.
+int gMaterialRetryCountdown = 0;
+constexpr int kMaterialRetryFrames = 180;
 
 /// Decodes "<reg> = ADRP page; <reg> = ADD reg, #imm" into the final address.
 /// Used to recover the RenderMaterialGroup singleton from a helper that
@@ -269,8 +275,12 @@ void HighlightRenderer::renderLevelDetour(void* levelRenderer, void* screenConte
 }
 
 bool HighlightRenderer::ensureMaterial() {
-    if (gMaterialResolved) return static_cast<bool>(gSelectionMaterial);
-    gMaterialResolved = true;
+    if (gMaterialResolved) return true;
+    if (gMaterialRetryCountdown > 0) {
+        --gMaterialRetryCountdown;
+        return false;
+    }
+    gMaterialRetryCountdown = kMaterialRetryFrames;
 
     auto& resolver = Resolver::get();
 
@@ -287,18 +297,31 @@ bool HighlightRenderer::ensureMaterial() {
         return false;
     }
 
+    if (!sdk::plausiblePointer(gMaterialGroup)) {
+        gMaterialGroup = nullptr;
+        core::log::warn("renderer: render_material_group resolved to an implausible address");
+        return false;
+    }
+
     auto** vtable = *reinterpret_cast<void***>(gMaterialGroup);
-    if (!vtable || !vtable[2]) {
+    if (!vtable || !sdk::plausiblePointer(vtable)) {
+        core::log::warn("renderer: material group has no vtable");
+        return false;
+    }
+    const auto lookup = vtable[2];
+    if (!sdk::plausiblePointer(lookup)) {
         core::log::warn("renderer: material group has no lookup slot");
         return false;
     }
 
     HashedString name("selection_box");
-    gSelectionMaterial = reinterpret_cast<GetMaterialFn>(vtable[2])(gMaterialGroup, &name);
+    gSelectionMaterial = reinterpret_cast<GetMaterialFn>(lookup)(gMaterialGroup, &name);
     if (!gSelectionMaterial) {
         core::log::warn("renderer: selection_box material not found in group");
         return false;
     }
+    gMaterialResolved = true;
+    gMaterialRetryCountdown = 0;
     core::log::debug("renderer: selection_box material acquired");
     return true;
 }

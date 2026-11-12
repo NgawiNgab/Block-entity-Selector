@@ -50,6 +50,10 @@ target("BlockEntitySelector")
         table.insert(args, path.join(os.projectdir(), "scripts", "package_levipack.py"))
         table.insert(args, "--library")
         table.insert(args, target:targetfile())
+        -- The launcher loads the manifest's entry name verbatim; pin it so the
+        -- package is valid even if xmake renames the build output.
+        table.insert(args, "--entry-name")
+        table.insert(args, "libBlockEntitySelector.so")
         table.insert(args, "--icon")
         table.insert(args, path.join(os.projectdir(), "assets", "icon.png"))
         table.insert(args, "--profiles")
@@ -67,7 +71,8 @@ target("tests")
     set_kind("binary")
     set_languages("c++20")
     set_default(false)
-    add_files("tests/*.cpp", "src/core/Profile.cpp", "src/core/Rtti.cpp", "src/core/Logging.cpp")
+    add_files("tests/*.cpp", "src/core/Profile.cpp", "src/core/Rtti.cpp", "src/core/Logging.cpp",
+              "src/selection/ScannerState.cpp")
     add_includedirs("include", "src")
     -- Host builds have no preloader SDK, so fmt and the logger come from stubs
     -- in tests/stubs. Point BES_TEST_STUBS at another SDK checkout to use the real

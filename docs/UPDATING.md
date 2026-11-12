@@ -19,9 +19,10 @@ order. That means a new game build usually needs data changes only.
 | `actor_manager_list` | entity list | entity highlighting dead, blocks still work |
 | `actor_is_player` | player/mob colour split | RTTI class-name heuristic |
 | `block_source_get_block` | block id lookup | block highlighting dead |
-| `level_get_hit_result`, `hit_result_get_entity` | reserved for crosshair picking | unused (picker uses actor boxes) |
+| `level_get_hit_result`, `hit_result_get_entity` | reserved for a true block raycast | unused (the picker uses actor boxes and the block at your feet) |
 
-Offsets (`level_renderer_player`, `actor_state_vector`, `actor_level`, …) are **probed** against
+Offsets (`client_instance_level_renderer`, `level_renderer_player`, `actor_state_vector`,
+`actor_level`, `dimension_block_source`, …) are **probed** against
 live objects on the first tick. A wrong value is rejected instead of being used, so a stale
 offset degrades a feature rather than crashing the game.
 
@@ -100,14 +101,19 @@ Open the module menu → **Dump Diagnostics**. The report is written to
 - every resolved signature with the winning candidate's origin
 - every offset with the evidence that confirmed it
 - renderer state (installed, frames drawn, last vertex count)
+- the live scan settings and how many block/entity matches are currently held
+- the actor classes that actually matched the selection (for entity targets)
 - the current selection and a rolling log
 
 Checklist:
 
 1. `client_instance_update` and `render_level` resolve → the mod can run at all.
 2. `renderer installed: yes` and `renderer frames` keeps increasing.
-3. Selecting a block you are standing in produces boxes.
+3. `matches: N block(s)` is non-zero when you are standing on the selected block. If it stays at
+   zero after a full pass, the block pipeline is not seeing your dimension.
 4. `last draw vertices` is non-zero while a target exists.
+5. For entities, `matched classes` should name the class you picked. An empty list usually means
+   `actor_manager_list` resolved to the wrong function.
 
 ---
 
@@ -146,10 +152,17 @@ Probes validate semantics, not just readability:
 
 - `actor_state_vector`: the pointer must be readable and hold finite floats inside world bounds.
 - `actor_aabb_component`: the pointed-to box must be non-degenerate and finite.
-- `level_renderer_player`: the camera floats must be finite.
+- `actor_level` / `actor_dimension`: the pointer must lead to something whose RTTI names a level or
+  a dimension, not just to any readable address.
+- `level_renderer_player`, `client_instance_level_renderer`: the pointer must expose a plausible
+  vtable; the camera floats reached through them must be finite.
+- `dimension_block_source`: the candidate block source must answer `getDimensionId` with a value in
+  the known dimension range. This is the only offset where a wrong guess is completely silent — a
+  wrong block source simply returns no blocks.
 
-If a probe rejects every candidate, that offset silently keeps its first profile value and the
-diagnostic report calls it out — check `Dump Diagnostics` first when a feature looks broken.
+If a probe rejects every candidate the feature degrades (see the table in section 1) and the
+diagnostic report names the offset as unconfirmed — check `Dump Diagnostics` first when something
+looks broken.
 
 ---
 
@@ -165,3 +178,8 @@ diagnostic report calls it out — check `Dump Diagnostics` first when a feature
   for a future release.
 - **Entity identity is by class**, not by variant. `Zombie` covers every zombie variant the game
   reports under that class; subclasses appear as separate entries in the picker.
+- **Only loaded entities exist.** The mod highlights what the client already knows about: mobs
+  outside the server's view distance are not in the actor list and cannot be drawn.
+- **Nothing is verified on device yet.** The bundled patterns and offsets are seeded from
+  BedrockTools for the 1.26 layout; treat them as starting candidates and regenerate with Zaphkiel
+  before reporting that something "does not work".

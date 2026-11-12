@@ -53,6 +53,16 @@ argument skipping. The demangler is still used as a fallback and for the diagnos
 first candidate that resolves; offsets are additionally validated against a live object before they
 are promoted. This is what makes a Zaphkiel-generated profile droppable at runtime.
 
+**Probes run before reads.** `World::update` confirms the state-vector and hitbox offsets against
+the live local player *before* anything reads through them, so a rejected candidate can never leak a
+garbage position or box into the snapshot. Confirmation is one-shot per session because the layout
+does not change while the game is running.
+
+**Degrade, do not crash.** If `actor_manager_list` or `block_source_get_block` never resolves, the
+corresponding half of the scanner logs once and reports "disabled" in the diagnostics dump instead of
+walking memory. Choosing silence over a guess is the difference between a mod that does nothing and
+one that crashes a player's world.
+
 **Geometry is rebuilt per frame.** The box list is small (bounded by the scan radius) and rebuilding
 avoids cache invalidation bugs, so `draw()` allocates vectors, fills them, and submits two batched
 draws (lines, then triangles when the translucent fill is enabled).
@@ -68,7 +78,9 @@ for anyone who prefers the vanilla look.
 | `src/core/Profile.cpp` | The JSON schema: candidate lists, override merging. Change here first if you add a signature. |
 | `src/core/Resolver.cpp` | Signature resolution order, pattern → vtable fallback, offset confirmation. |
 | `src/core/Rtti.cpp` | Actor identity. The single most important piece for "works without signatures". |
-| `src/selection/Scanner.cpp` | Per-tick work: entity scan throttling, resumable block cursor, budget. |
+| `src/selection/Scanner.cpp` | Per-tick work: entity scan throttling, block budget, dimension-change invalidation. |
+| `src/selection/BlockCursor.hpp` | The resumable block walk, header-only and game-free so it can be unit tested. |
+| `src/selection/ScannerState.cpp` | The parts of `Scanner` that touch no game state (`get`, settings, reset, targets); split out so the host tests can link them without `World`. |
 | `src/render/HighlightRenderer.cpp` | Hook, material acquisition, batched submission, colour state. |
 | `src/world/World.cpp` | All game-pointer dereferencing, offset probing, block name resolution. |
 

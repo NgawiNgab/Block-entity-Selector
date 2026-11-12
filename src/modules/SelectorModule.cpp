@@ -249,10 +249,25 @@ void SelectorModule::onTick(void* localPlayer, std::uint64_t nowMs, const bes::s
 
 void SelectorModule::onKeybind(std::string_view key, bool isDown) {
     if (key != "keybind" || !isDown) return;
-    // The keybind clears the selection: the actual picking happens through the
-    // on-screen Select button, which knows what the crosshair is on.
-    selection::Selection::get().clear();
-    selection::Scanner::get().reset();
+
+    auto& selectionStore = selection::Selection::get();
+    // The keybind is an escape hatch and a mode switch in one: with something
+    // selected it clears the selection, otherwise it turns highlighting on or
+    // off. Picking a target stays on the on-screen Select button, which is the
+    // only thing that knows what the crosshair is pointing at.
+    if (selectionStore.current()) {
+        selectionStore.clear();
+        selection::Scanner::get().reset();
+        refreshTargetLabel();
+        core::log::info("keybind: selection cleared");
+        return;
+    }
+
+    const bool next = !mEnabled;
+    setEnabled(next);
+    // Keep the launcher's toggle in sync with a state change that did not come
+    // from the menu itself.
+    pl::modmenu::setModuleEnabled(mModuleId, next);
 }
 
 void SelectorModule::onConfigChanged(std::string_view key, std::string_view value) {

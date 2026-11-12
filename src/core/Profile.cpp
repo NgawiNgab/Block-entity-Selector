@@ -9,6 +9,29 @@
 #include <unordered_map>
 
 namespace bes::core {
+
+namespace {
+
+/// Appends `existing` as fallbacks for candidates this pass did not supply.
+/// Duplicates are dropped: loading the same profile twice (or the bundled file
+/// plus an override that repeats a value) must not grow the list or make the
+/// resolver try one pattern several times.
+template <typename Candidate>
+void appendFallbacks(std::vector<Candidate>& loaded, const std::vector<Candidate>& existing) {
+    for (const auto& candidate : existing) {
+        const bool duplicate = std::any_of(loaded.begin(), loaded.end(), [&](const Candidate& kept) {
+            if constexpr (std::is_same_v<Candidate, OffCandidate>) {
+                return kept.value == candidate.value;
+            } else {
+                return kept.pattern == candidate.pattern && kept.slot == candidate.slot &&
+                       kept.kind == candidate.kind;
+            }
+        });
+        if (!duplicate) loaded.push_back(candidate);
+    }
+}
+
+} // namespace
 namespace {
 
 constexpr const char* kSigNames[] = {
@@ -151,7 +174,14 @@ bool Profile::loadFromText(std::string_view json, std::string_view originLabel, 
         return false;
     }
 
-    if (replaceAll) clear();
+    // In merge mode, remember the candidate counts so an override that changed
+    // nothing can be reported as a no-op instead of silently "succeeding".
+    std::vector<std::size_t> before;
+    if (!replaceAll) {
+        before.reserve(SigCount + OffCount);
+        for (const auto& list : mSignatures) before.push_back(list.size());
+        for (const auto& list : mOffsets) before.push_back(list.size());
+    }
 
     const std::string label(originLabel);
     if (document.contains("game_version") && document["game_version"].is_string()) {
@@ -173,7 +203,10 @@ bool Profile::loadFromText(std::string_view json, std::string_view originLabel, 
                 log::debug("profile: ignoring unknown signature key " + key);
                 continue;
             }
-            if (!replaceAll) mSignatures[idIndex].clear();
+            // Candidates from this document are tried first; in merge mode the
+            // previously loaded ones stay behind them as fallbacks. That is what
+            // makes dropping in a freshly generated profile non-destructive.
+            std::vector<SigCandidate> loaded;
 
             auto pushCandidate = [&](const nlohmann::json& node) -> bool {
                 if (node.is_string()) {
@@ -182,7 +215,7 @@ bool Profile::loadFromText(std::string_view json, std::string_view originLabel, 
                     candidate.pattern = node.get<std::string>();
                     candidate.origin = label;
                     if (candidate.pattern.empty()) return false;
-                    mSignatures[idIndex].push_back(std::move(candidate));
+                    loaded.push_back(std::move(candidate));
                     return true;
                 }
                 if (!node.is_object()) return false;
@@ -207,15 +240,23 @@ bool Profile::loadFromText(std::string_view json, std::string_view originLabel, 
                 } else {
                     return false;
                 }
-                mSignatures[idIndex].push_back(std::move(candidate));
+                loaded.push_back(std::move(candidate));
                 return true;
             };
 
-            if (entry.contains("candidates") && entry["candidates"].is_array()) {
+            // Accepted shapes: a bare string, a bare array of strings/objects,
+            // or an object with a "candidates" array.
+            if (entry.is_array()) {
+                for (const auto& node : entry) pushCandidate(node);
+            } else if (entry.contains("candidates") && entry["candidates"].is_array()) {
                 for (const auto& node : entry["candidates"]) pushCandidate(node);
             } else {
                 pushCandidate(entry);
             }
+
+            auto& target = mSignatures[idIndex];
+            if (!replaceAll) appendFallbacks(loaded, target);
+            target = std::move(loaded);
         }
     }
 
@@ -233,13 +274,13 @@ bool Profile::loadFromText(std::string_view json, std::string_view originLabel, 
                 log::debug("profile: ignoring unknown offset key " + key);
                 continue;
             }
-            if (!replaceAll) mOffsets[idIndex].clear();
+            std::vector<OffCandidate> loaded;
 
             auto pushCandidate = [&](const nlohmann::json& node) -> bool {
                 OffCandidate candidate;
                 candidate.origin = label;
                 if (parseNumeric(node, candidate.value)) {
-                    mOffsets[idIndex].push_back(std::move(candidate));
+                    loaded.push_back(std::move(candidate));
                     return true;
                 }
                 if (!node.is_object()) return false;
@@ -249,19 +290,43 @@ bool Profile::loadFromText(std::string_view json, std::string_view originLabel, 
                 if (!parseNumeric(node.contains("offset") ? node["offset"] : node, candidate.value)) {
                     return false;
                 }
-                mOffsets[idIndex].push_back(std::move(candidate));
+                loaded.push_back(std::move(candidate));
                 return true;
             };
 
-            if (entry.contains("candidates") && entry["candidates"].is_array()) {
+            if (entry.is_array()) {
+                for (const auto& node : entry) pushCandidate(node);
+            } else if (entry.contains("candidates") && entry["candidates"].is_array()) {
                 for (const auto& node : entry["candidates"]) pushCandidate(node);
             } else {
                 pushCandidate(entry);
             }
+
+            auto& target = mOffsets[idIndex];
+            if (!replaceAll) appendFallbacks(loaded, target);
+            target = std::move(loaded);
         }
     }
 
     mLoaded = true;
+
+    if (!replaceAll) {
+        std::size_t changed = 0;
+        std::size_t index = 0;
+        for (const auto& list : mSignatures) {
+            if (index >= before.size() || before[index] != list.size()) ++changed;
+            ++index;
+        }
+        for (const auto& list : mOffsets) {
+            if (index >= before.size() || before[index] != list.size()) ++changed;
+            ++index;
+        }
+        if (changed == 0) {
+            log::warn("profile override from " + label + " defined no new candidates (typo in a key name?)");
+        } else {
+            log::info("profile override from " + label + ": " + std::to_string(changed) + " entr(ies) updated");
+        }
+    }
     return true;
 }
 

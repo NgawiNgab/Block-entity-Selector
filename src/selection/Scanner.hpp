@@ -1,5 +1,6 @@
 #pragma once
 
+#include "selection/BlockCursor.hpp"
 #include "selection/Selection.hpp"
 #include "world/World.hpp"
 
@@ -69,8 +70,12 @@ private:
     mutable std::mutex mMutex;
     FrameTargets mTargets{};
     std::vector<BlockEntry> mBlocks;
-    bes::sdk::BlockPos mCursor{};
-    bool mCursorValid = false;
+    BlockCursor mCursor;
+    /// Dimension the cached block results belong to, or -1 when unknown.
+    int mBlockDimension = -1;
+    /// True once the current pass has been reported as finished (so a scan that
+    /// matched nothing still counts as one state change, not zero).
+    bool mProgressReported = false;
     bool mDirty = true;
     std::uint64_t mLastEntityScan = 0;
     Settings mSettings{};
