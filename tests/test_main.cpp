@@ -1,6 +1,7 @@
 #include "core/Profile.hpp"
 #include "core/Rtti.hpp"
 #include "selection/BlockCursor.hpp"
+#include "selection/Identifier.hpp"
 #include "selection/Scanner.hpp"
 #include "selection/Selection.hpp"
 
@@ -228,6 +229,115 @@ void testScannerSettings() {
     CHECK(scanner.settings().radius == 24.f);
 }
 
+void testIdentifierSyntax() {
+    using bes::identifier::Domain;
+    using bes::identifier::normalise;
+    using bes::identifier::validSyntax;
+
+    // Canonical forms pass.
+    CHECK(validSyntax("minecraft:diamond_ore", Domain::Block));
+    CHECK(validSyntax("minecraft:deepslate_diamond_ore", Domain::Block));
+    CHECK(validSyntax("custom:my_block.v2", Domain::Block));
+    CHECK(validSyntax("custom:path/to/thing", Domain::Block));
+
+    // Malformed forms are rejected rather than coerced.
+    CHECK(!validSyntax("", Domain::Block));
+    CHECK(!validSyntax("diamond_ore", Domain::Block));            // no namespace
+    CHECK(!validSyntax(":diamond_ore", Domain::Block));           // empty namespace
+    CHECK(!validSyntax("minecraft:", Domain::Block));             // empty path
+    CHECK(!validSyntax("Minecraft:diamond_ore", Domain::Block));  // upper case
+    CHECK(!validSyntax("minecraft:Diamond_Ore", Domain::Block));
+    CHECK(!validSyntax("minecraft:has space", Domain::Block));
+    // A trailing underscore is legal in an identifier, so it must NOT be
+    // rejected; only '.', '-' and '/' are separators that cannot end a path.
+    CHECK(validSyntax("minecraft:trailing_", Domain::Block));
+    CHECK(!validSyntax("minecraft:trailing.", Domain::Block));
+    CHECK(!validSyntax("minecraft:trailing-", Domain::Block));
+    CHECK(!validSyntax("minecraft:trailing/", Domain::Block));
+    CHECK(!validSyntax("minecraft:a::b", Domain::Block));         // double colon
+    CHECK(!validSyntax("minecraft:a//b", Domain::Block));
+
+    // Normalisation handles what people actually paste.
+    CHECK(normalise("  minecraft:diamond_ore  ", Domain::Block) == "minecraft:diamond_ore");
+    CHECK(normalise("MINECRAFT:Diamond_Ore", Domain::Block) == "minecraft:diamond_ore");
+    CHECK(normalise("diamond_ore", Domain::Block) == "minecraft:diamond_ore");   // bare name
+    CHECK(normalise("block/minecraft:chest", Domain::Block) == "minecraft:chest"); // domain prefix
+    CHECK(normalise("entity/minecraft:zombie", Domain::Entity) == "minecraft:zombie");
+    CHECK(normalise("minecraft:minecraft:chest", Domain::Block) == "minecraft:chest");
+    CHECK(normalise("", Domain::Block).empty());
+    CHECK(normalise("   ", Domain::Block).empty());
+    CHECK(normalise("bad name!", Domain::Block).empty());
+}
+
+void testIdentifierIndex() {
+    using bes::identifier::ClassIndex;
+    using bes::identifier::Confidence;
+    using bes::identifier::Domain;
+    using bes::identifier::resolve;
+
+    auto& index = ClassIndex::get();
+    index.clear();
+    index.loadDocumentedTable();
+
+    // 1:Many expansion: one identifier, several RTTI classes.
+    const auto villager = resolve(Domain::Entity, "minecraft:villager");
+    CHECK(villager);
+    CHECK(villager.classes.size() == 2);
+    CHECK(villager.confidence == Confidence::DocumentedTable);
+
+    // A documented entity resolves to its class set.
+    const auto zombie = resolve(Domain::Entity, "zombie");  // bare name normalises
+    CHECK(zombie.id == "minecraft:zombie");
+    CHECK(zombie.classes.size() == 1);
+    CHECK(zombie.classes[0] == "Zombie");
+
+    // Blocks have identifiers but no class mapping; that is expected, not an error.
+    const auto ore = resolve(Domain::Block, "minecraft:diamond_ore");
+    CHECK(ore);
+    CHECK(ore.classes.empty());
+    CHECK(ore.confidence == Confidence::DocumentedTable);
+
+    // An id that is well-formed but unknown is Unverified, not Invalid, and is
+    // still selectable so the scanner can look for it.
+    const auto unknown = resolve(Domain::Entity, "minecraft:nonexistent_mob");
+    CHECK(unknown);
+    CHECK(unknown.confidence == Confidence::Unverified);
+    CHECK(unknown.classes.empty());
+
+    // Garbage is Invalid and must not become a selection.
+    const auto bad = resolve(Domain::Block, "not an id!!");
+    CHECK(!bad);
+    CHECK(bad.confidence == Confidence::Invalid);
+    CHECK(resolve(Domain::Block, "").confidence == Confidence::Invalid);
+
+    // Runtime evidence upgrades a binding without losing the class.
+    index.bind(Domain::Entity, "minecraft:custom_mob", "CustomMobClass", Confidence::ObservedLive,
+               "observed as a live actor");
+    const auto custom = resolve(Domain::Entity, "minecraft:custom_mob");
+    CHECK(custom);
+    CHECK(custom.classes.size() == 1);
+    CHECK(custom.classes[0] == "CustomMobClass");
+
+    // Binding the same pair twice must not duplicate it.
+    index.bind(Domain::Entity, "minecraft:custom_mob", "CustomMobClass", Confidence::ObservedLive);
+    CHECK(resolve(Domain::Entity, "minecraft:custom_mob").classes.size() == 1);
+
+    // A second class for the same identifier extends the set (1:Many is additive).
+    index.bind(Domain::Entity, "minecraft:custom_mob", "CustomMobClassV2", Confidence::ObservedLive);
+    const auto both = resolve(Domain::Entity, "minecraft:custom_mob");
+    CHECK(both.classes.size() == 2);
+
+    // A note alone records evidence without inventing a class.
+    index.note(Domain::Block, "minecraft:some_block", Confidence::ObservedLive, "seen");
+    const auto noted = resolve(Domain::Block, "minecraft:some_block");
+    CHECK(noted);
+    CHECK(noted.classes.empty());
+
+    // The index never invents a mapping for an id nobody bound.
+    CHECK(!index.mapped(Domain::Entity, "minecraft:unbound_mob"));
+    CHECK(index.classesFor(Domain::Entity, "minecraft:unbound_mob").empty());
+}
+
 void testSelectionMatching() {
     using bes::selection::entityMatches;
     using bes::selection::Kind;
@@ -236,19 +346,34 @@ void testSelectionMatching() {
 
     Target target;
     target.kind = Kind::Entity;
-    target.id = "Zombie";
+    target.id = "minecraft:zombie";
+    target.classes = {"Zombie"};
 
-    // Exact class match only; a sibling class with a similar name must not match.
+    // 1:Many membership: the mapped class matches...
     CHECK(entityMatches(target, "Zombie"));
+    // ...and a sibling class with a similar name does not.
     CHECK(!entityMatches(target, "ZombieVariant"));
     CHECK(!entityMatches(target, "Husk"));
-    // Case and whitespace are meaningful: RTTI names are exact identifiers.
+    // Case is meaningful: RTTI names are exact identifiers.
     CHECK(!entityMatches(target, "zombie"));
+
+    // A second class bound to the same identifier also matches.
+    target.classes = {"Villager", "VillagerV2"};
+    target.id = "minecraft:villager";
+    CHECK(entityMatches(target, "Villager"));
+    CHECK(entityMatches(target, "VillagerV2"));
+    CHECK(!entityMatches(target, "VillagerV3"));
 
     // Substring mode is opt-in and covers subclasses.
     target.matchBySubstring = true;
-    CHECK(entityMatches(target, "Zombie"));
+    CHECK(entityMatches(target, "Villager"));
+    CHECK(entityMatches(target, "VillagerV2"));
+
+    target.classes = {"Zombie"};
+    target.id = "minecraft:zombie";
+    target.matchBySubstring = true;
     CHECK(entityMatches(target, "ZombieVariant"));
+    target.matchBySubstring = false;
 
     // A block target never matches an actor class, and vice versa.
     Target block;
@@ -267,12 +392,13 @@ void testSelectionMatching() {
     store.set(target);
     CHECK(store.active());
     const auto snapshot = store.current();
-    CHECK(snapshot.kind == Kind::Entity && snapshot.id == "Zombie");
+    CHECK(snapshot.kind == Kind::Entity && snapshot.id == "minecraft:zombie");
+    const auto expectedId = snapshot.id;
     store.clear();
     CHECK(!store.active());
     CHECK(!store.current());
     // The copy taken earlier is unaffected by the clear.
-    CHECK(snapshot.id == "Zombie");
+    CHECK(snapshot.id == expectedId);
 }
 
 void testBlockCursor() {
@@ -354,6 +480,8 @@ int main() {
     testScannerSettings();
     testBlockCursor();
     testSelectionMatching();
+    testIdentifierSyntax();
+    testIdentifierIndex();
 
     std::printf("%d checks, %d failure(s)\n", gChecks, gFailures);
     return gFailures == 0 ? 0 : 1;

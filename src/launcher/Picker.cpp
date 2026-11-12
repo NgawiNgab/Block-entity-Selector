@@ -125,14 +125,15 @@ void Picker::pickUnderCrosshair() {
 
     // Cycle: entity -> block -> clear, skipping whichever is unavailable.
     if (!entityClass.empty() && !(current.kind == selection::Kind::Entity && current.id == entityClass)) {
-        selection.toggleEntity(entityClass, entityClass);
+        // The picker observes a live class, which is evidence in its own right.
+        selection.selectEntityFromClass(entityClass);
         selection::Scanner::get().reset();
         core::log::info("picker: entity " + entityClass);
         return;
     }
 
     if (!blockId.empty() && !(current.kind == selection::Kind::Block && current.id == blockId)) {
-        selection.toggleBlock(blockId, blockId);
+        selection.selectBlock(blockId);
         selection::Scanner::get().reset();
         core::log::info("picker: block " + blockId);
         return;
