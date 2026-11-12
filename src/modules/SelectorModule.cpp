@@ -248,7 +248,10 @@ void SelectorModule::onTick(void* localPlayer, std::uint64_t nowMs, const bes::s
 }
 
 void SelectorModule::onKeybind(std::string_view key, bool isDown) {
-    if (key != "keybind" || !isDown) return;
+    // The launcher only routes the module's bound key here, so no key matching is
+    // needed; filtering on a hardcoded name would silently ignore the bind.
+    if (!isDown) return;
+    core::log::debug("keybind pressed: " + std::string(key));
 
     auto& selectionStore = selection::Selection::get();
     // The keybind is an escape hatch and a mode switch in one: with something

@@ -2,6 +2,7 @@
 #include "core/Rtti.hpp"
 #include "selection/BlockCursor.hpp"
 #include "selection/Scanner.hpp"
+#include "selection/Selection.hpp"
 
 #include <bes/sdk/Types.hpp>
 
@@ -227,6 +228,53 @@ void testScannerSettings() {
     CHECK(scanner.settings().radius == 24.f);
 }
 
+void testSelectionMatching() {
+    using bes::selection::entityMatches;
+    using bes::selection::Kind;
+    using bes::selection::Selection;
+    using bes::selection::Target;
+
+    Target target;
+    target.kind = Kind::Entity;
+    target.id = "Zombie";
+
+    // Exact class match only; a sibling class with a similar name must not match.
+    CHECK(entityMatches(target, "Zombie"));
+    CHECK(!entityMatches(target, "ZombieVariant"));
+    CHECK(!entityMatches(target, "Husk"));
+    // Case and whitespace are meaningful: RTTI names are exact identifiers.
+    CHECK(!entityMatches(target, "zombie"));
+
+    // Substring mode is opt-in and covers subclasses.
+    target.matchBySubstring = true;
+    CHECK(entityMatches(target, "Zombie"));
+    CHECK(entityMatches(target, "ZombieVariant"));
+
+    // A block target never matches an actor class, and vice versa.
+    Target block;
+    block.kind = Kind::Block;
+    block.id = "minecraft:diamond_ore";
+    CHECK(!entityMatches(block, "Zombie"));
+    CHECK(!entityMatches(block, "minecraft:diamond_ore"));
+
+    // Degenerate targets match nothing.
+    Target empty;
+    CHECK(!entityMatches(empty, "Zombie"));
+    CHECK(!entityMatches(target, ""));
+
+    // The store hands back value copies, so the render thread never shares state.
+    auto& store = Selection::get();
+    store.set(target);
+    CHECK(store.active());
+    const auto snapshot = store.current();
+    CHECK(snapshot.kind == Kind::Entity && snapshot.id == "Zombie");
+    store.clear();
+    CHECK(!store.active());
+    CHECK(!store.current());
+    // The copy taken earlier is unaffected by the clear.
+    CHECK(snapshot.id == "Zombie");
+}
+
 void testBlockCursor() {
     using bes::selection::BlockCursor;
     using bes::sdk::BlockPos;
@@ -305,6 +353,7 @@ int main() {
     testOffsetsAreSane();
     testScannerSettings();
     testBlockCursor();
+    testSelectionMatching();
 
     std::printf("%d checks, %d failure(s)\n", gChecks, gFailures);
     return gFailures == 0 ? 0 : 1;

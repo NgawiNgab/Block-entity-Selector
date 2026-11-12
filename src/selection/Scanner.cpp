@@ -117,11 +117,8 @@ void Scanner::scanEntities(const world::Snapshot& snapshot, const Target& target
     const float maxDistance = settings.entityRange;
     for (const auto& actor : actors) {
         if (!entityMatches(target, actor.className)) continue;
-        if (actor.isPlayer && actor.actor == snapshot.localPlayer) {
-            // Highlight the player too when they selected a player class; the
-            // renderer draws world geometry, which includes the local player's
-            // own box in third person.
-        }
+        // The local player is included on purpose: the highlight is world
+        // geometry, so their own box makes sense in third person.
         if (actor.isPlayer && !settings.includePlayers) continue;
         if (!actor.bounds.valid()) continue;
         if (actor.bounds.distanceSquaredTo(origin) > maxDistance * maxDistance) continue;

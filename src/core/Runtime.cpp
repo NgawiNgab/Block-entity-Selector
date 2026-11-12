@@ -173,16 +173,11 @@ void Runtime::installHooks() {
     // Per-tick game hook: the only source of a valid local player pointer.
     gamehooks::install([](void* player) { Runtime::get().onLocalPlayerTick(player); });
 
-    // The launcher has a typed key callback that fires regardless of the game
-    // input state; the module's own keybind rides on it.
-    static bool keyCallbackRegistered = false;
-    if (!keyCallbackRegistered) {
-        keyCallbackRegistered = true;
-        pl::input::registerKeyCallback([](const pl::input::KeyEvent& event) {
-            modules::SelectorModule::get().onKeybind("keybind", event.isKeyDown);
-            return false;
-        });
-    }
+    // The keybind is delivered through the mod menu's own onKeybind hook, which
+    // is registered in SelectorModule::registerInMenu and only fires for the key
+    // the user bound to this module. Do *not* also listen on
+    // pl::input::registerKeyCallback here: that callback sees every key the user
+    // types, which would toggle the mod on any keystroke.
 }
 
 void Runtime::onLocalPlayerTick(void* player) {

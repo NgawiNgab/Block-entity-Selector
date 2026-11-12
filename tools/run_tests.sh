@@ -25,7 +25,7 @@ mkdir -p "$(dirname "$OUT")"
     -o "$OUT" \
     tests/test_main.cpp \
     src/core/Profile.cpp src/core/Rtti.cpp src/core/Logging.cpp \
-    src/selection/ScannerState.cpp \
+    src/selection/Selection.cpp src/selection/ScannerState.cpp \
     -ldl
 
 "$OUT"
