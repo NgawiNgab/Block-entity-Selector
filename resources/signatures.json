@@ -1,0 +1,224 @@
+{
+  "schema": 1,
+  "game_version": "1.26.6x",
+  "_readme": [
+    "Signature and offset table for Block Entity Selector.",
+    "Every entry accepts a single value or a 'candidates' array tried in order.",
+    "Pattern entries use BedrockTools-style byte patterns: hex bytes with '?' wildcards.",
+    "RTTI entries name a typeinfo and a vtable slot, resolved through the Itanium ABI.",
+    "Regenerate this file with Zaphkiel (see tools/zaphkiel/zInput.txt) and either",
+    "replace this file or drop the output in the mod's config folder as signatures.json."
+  ],
+  "signatures": {
+    "render_level": {
+      "candidates": [
+        {
+          "pattern": "? ? ? D1 ? ? ? FD ? ? ? 6D ? ? ? 6D ? ? ? 6D ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? 91 57 D0 3B D5",
+          "note": "LevelRenderer::renderLevel prologue (shared with BedrockTools)"
+        }
+      ]
+    },
+    "tessellator_begin": {
+      "candidates": [
+        {
+          "pattern": "? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 FD 03 00 91 ? ? ? 39 ? ? ? 39 08 01 09 2A",
+          "note": "Tessellator::begin(debugCallback, primitiveMode, vertexCount, noIndices)"
+        }
+      ]
+    },
+    "tessellator_color": {
+      "candidates": [
+        {
+          "pattern": "? ? ? 52 ? ? ? 39 04 01 27 1E 00 08 24 1E 21 08 24 1E 42 08 24 1E 63 08 24 1E 08 00 38 1E",
+          "note": "Tessellator::color(r,g,b,a) colour-pack sequence"
+        }
+      ]
+    },
+    "tessellator_vertex": {
+      "candidates": [
+        {
+          "pattern": "? ? ? D1 ? ? ? FD ? ? ? 6D ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? 91 5B D0 3B D5 ? ? ? F9 ? ? ? F9",
+          "note": "Tessellator::vertex(x,y,z)"
+        }
+      ]
+    },
+    "render_mesh_immediately": {
+      "candidates": [
+        {
+          "pattern": "? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 FD 03 00 91 ? ? ? D1 57 D0 3B D5 F6 03 00 AA E0 03 01 AA ? ? ? F9 F4 03 03 AA",
+          "note": "MeshHelpers::renderMeshImmediately(screenContext, tessellator, material, pass)"
+        }
+      ]
+    },
+    "actor_manager_list": {
+      "candidates": [
+        {
+          "pattern": "? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 FD 03 00 91 ? ? ? F9 ? ? ? A9 ? ? ? F9 ? ? ? B4 F4 03 00 AA",
+          "note": "ActorManager::getRuntimeActorList() -> std::vector<Actor*>"
+        }
+      ]
+    },
+    "actor_is_player": {
+      "candidates": [
+        {
+          "pattern": "? ? ? F9 ? ? ? 52 ? ? ? 72 ? ? ? A9 08 01 0B CB ? ? ? D3 ? ? ? 51 0C 01 0A 8A ? ? ? B9 6B 0D 0C 8B ? ? ? F9 ? ? ? F9 ? ? ? B1 ? ? ? 54 8B 15 0B 8B ? ? ? B9 BF 01 0A 6B ? ? ? 54 ? ? ? F9 7F 01 09 EB ? ? ? 54 ? ? ? F9 ? ? ? B4 ? ? ? A9 ? ? ? D3 6B 01 09 CB 5F 0D 8B EB ? ? ? 54 ? ? ? F8 ? ? ? B4 ? ? ? 92 ? ? ? 12 ? ? ? 92 ? ? ? B8 28 01 08 4A ? ? ? 12 1F 01 09 6B E0 27 9F 1A C0 03 5F D6 E0 03 1F 2A C0 03 5F D6 ? ? ? D1 ? ? ? FD",
+          "note": "Actor::isPlayer()"
+        }
+      ]
+    },
+    "level_get_hit_result": {
+      "candidates": [
+        {
+          "pattern": "? ? ? F9 C0 03 5F D6 ? ? ? F9 ? ? ? ? ? ? ? A9 ? ? ? A9 ? ? ? A9 FD 03 00 91 ? ? ? F9 ? ? ? F9 ? ? ? B4 ? ? ? A9 F3 03 00 AA F4 03 08 AA ? ? ? B4 ? ? ? 91 ? ? ? 52 ? ? ? ? ? ? ? F9 ? ? ? F9 ? ? ? B4 ? ? ? F9 ? ? ? 39 ? ? ? F9 ? ? ? 36 ? ? ? A9 ? ? ? A9 ? ? ? A8 C0 03 5F D6 ? ? ? ? ? ? ? 91",
+          "note": "Level::getHitResult()"
+        }
+      ]
+    },
+    "hit_result_get_entity": {
+      "candidates": [
+        {
+          "pattern": "? ? ? D1 ? ? ? A9 ? ? ? F9 ? ? ? 91 53 D0 3B D5 E8 03 00 AA ? ? ? 91 ? ? ? F9 ? ? ? 91 ? ? ? F8 ? ? ? ? ? ? ? 91 ? ? ? ? ? ? ? 36 ? ? ? 91 ? ? ? 52 ? ? ? ? ? ? ? ? E0 03 1F AA ? ? ? F9 ? ? ? F8 1F 01 09 EB ? ? ? 54 ? ? ? A9 ? ? ? F9 ? ? ? 91 C0 03 5F D6 ? ? ? ? ? ? ? 91",
+          "note": "HitResult::getEntity()"
+        }
+      ]
+    },
+    "block_source_get_block": {
+      "candidates": [
+        {
+          "pattern": "? ? ? D1 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? 91 56 D0 3B D5 ? ? ? F9 ? ? ? F9 ? ? ? B9 ? ? ? 79 1F 01 09 6B ? ? ? 54 ? ? ? 79 F3 03 00 AA 1F 01 09 6B ? ? ? 54 E0 03 00 91",
+          "note": "BlockSource::getBlock(BlockPos const&)"
+        }
+      ]
+    },
+    "render_material_group": {
+      "candidates": [
+        {
+          "pattern": "? ? ? ? ? ? ? 91 ? ? ? D1 ? ? ? D1 ? ? ? 91 E3 03 14 AA ? ? ? 52 ? ? ? ? ? ? ? F9 ? ? ? A9 ? ? ? B4 ? ? ? 91 ? ? ? 92 ? ? ? ? ? ? ? B5 ? ? ? F9 E0 03 14 AA ? ? ? F9 00 01 3F D6 E0 03 14 AA ? ? ? ? ? ? ? F9 ? ? ? F9 ? ? ? B4 ? ? ? 91 ? ? ? 92 ? ? ? ? ? ? ? B5 ? ? ? F9 E0 03 14 AA ? ? ? F9 00 01 3F D6 E0 03 14 AA ? ? ? ? ? ? ? 38 ? ? ? 37 ? ? ? 39 ? ? ? 37 ? ? ? F8 ? ? ? A9 ? ? ? B4 ? ? ? 91 ? ? ? 92 ? ? ? ? ? ? ? B5 ? ? ? F9 E0 03 14 AA ? ? ? F9 00 01 3F D6 E0 03 14 AA ? ? ? ? ? ? ? F8 ? ? ? F8 ? ? ? B4 ? ? ? 91 ? ? ? 92 ? ? ? ? ? ? ? B5 ? ? ? F9 E0 03 14 AA ? ? ? F9 00 01 3F D6 E0 03 14 AA",
+          "note": "material lookup helper; the ADRP+ADD inside it yields RenderMaterialGroup"
+        }
+      ]
+    },
+    "client_instance_update": {
+      "candidates": [
+        {
+          "pattern": "? ? ? FC ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? 91 ? ? ? D1 59 D0 3B D5 ? ? ? 52 F5 03 02 2A",
+          "note": "ClientInstance::update(bool)"
+        }
+      ]
+    },
+    "client_instance_get_local_player": {
+      "candidates": [
+        {
+          "pattern": "? ? ? D1 ? ? ? A9 ? ? ? F9 ? ? ? 91 53 D0 3B D5 E8 03 00 AA ? ? ? 91 ? ? ? F9 ? ? ? 91 ? ? ? F8 ? ? ? ? ? ? ? 91 ? ? ? ? ? ? ? 36 ? ? ? 91 ? ? ? 52 ? ? ? ? ? ? ? ? E0 03 1F AA ? ? ? F9 ? ? ? F8 1F 01 09 EB ? ? ? 54 ? ? ? A9 ? ? ? F9 ? ? ? 91 C0 03 5F D6 ? ? ? ? C0 03 5F D6",
+          "note": "ClientInstance::getLocalPlayer()"
+        }
+      ]
+    }
+  },
+  "offsets": {
+    "level_renderer_player": {
+      "candidates": [
+        {
+          "offset": "0x430",
+          "note": "LevelRenderer::mLevelRendererPlayer"
+        }
+      ]
+    },
+    "level_renderer_player_cam_pos": {
+      "candidates": [
+        {
+          "offset": "0x614",
+          "note": "LevelRendererPlayer::mCamPos (float3)"
+        }
+      ]
+    },
+    "client_instance_level_renderer": {
+      "candidates": [
+        {
+          "offset": "0x90",
+          "note": "ClientInstance::mLevelRenderer (candidate; validated by a readable vtable)"
+        },
+        {
+          "offset": "0x88",
+          "note": "fallback"
+        },
+        {
+          "offset": "0xA0",
+          "note": "fallback"
+        }
+      ]
+    },
+    "screen_context_tessellator": {
+      "candidates": [
+        {
+          "offset": "0xB0",
+          "note": "ScreenContext::mTessellator"
+        }
+      ]
+    },
+    "screen_context_color_holder": {
+      "candidates": [
+        {
+          "offset": "0x30",
+          "note": "ScreenContext::mColorHolder (4 floats + dirty byte at +0x10)"
+        }
+      ]
+    },
+    "actor_state_vector": {
+      "candidates": [
+        {
+          "offset": "0x228",
+          "note": "Actor::mStateVectorComponent (position at +0)"
+        }
+      ]
+    },
+    "actor_aabb_component": {
+      "candidates": [
+        {
+          "offset": "0x230",
+          "note": "Actor::mStateVectorComponent + 8 = AABBShapeComponent"
+        }
+      ]
+    },
+    "actor_level": {
+      "candidates": [
+        {
+          "offset": "0x1F0",
+          "note": "Actor::mLevel"
+        }
+      ]
+    },
+    "actor_dimension": {
+      "candidates": [
+        {
+          "offset": "0x1E0",
+          "note": "Actor::mDimension"
+        }
+      ]
+    },
+    "level_actor_manager": {
+      "candidates": [
+        {
+          "offset": "0x478",
+          "note": "Level::mActorManager"
+        }
+      ]
+    },
+    "dimension_block_source": {
+      "candidates": [
+        {
+          "offset": "0xD0",
+          "note": "Dimension::mBlockSource (candidate, validated against getDimensionId)"
+        },
+        {
+          "offset": "0xC8",
+          "note": "fallback"
+        },
+        {
+          "offset": "0xD8",
+          "note": "fallback"
+        }
+      ]
+    }
+  }
+}

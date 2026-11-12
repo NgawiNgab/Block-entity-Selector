@@ -1,0 +1,13 @@
+build/
+.xmake/
+.vscode/
+.idea/
+.DS_Store
+compile_commands.json
+*.so
+*.levipack
+*.zip
+*.o
+diagnostics.txt
+__pycache__/
+*.pyc
