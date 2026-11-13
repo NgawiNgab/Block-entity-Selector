@@ -6,6 +6,7 @@
 #include "selection/Scanner.hpp"
 #include "selection/Selection.hpp"
 
+#include <bes/sdk/AddressSpace.hpp>
 #include <bes/sdk/LibcxxString.hpp>
 #include <bes/sdk/Types.hpp>
 
@@ -551,6 +552,64 @@ void testDiagnosticReportBuffer() {
     CHECK(bes::core::log::peekReport().empty());
 }
 
+void testModulePresence() {
+    // The process gate used to compare argv[0] against two hardcoded strings.
+    // It now asks whether the game's image is actually mapped, so the parser that
+    // answers that question has to be correct -- including on lines whose path
+    // column contains spaces, which a naive sscanf("%s") would truncate.
+    auto& space = bes::sdk::AddressSpace::get();
+    CHECK(space.refresh());
+    CHECK(space.regionCount() > 0);
+
+    // Positive control first. Without this, breaking the path parser would make
+    // every query below answer "not loaded" and the test would still pass -- it
+    // only asserts absence, and absence is what a broken parser produces.
+    CHECK(space.fileBackedRegionCount() > 0);
+
+    // A process always has something mapped, and it never has a Minecraft image.
+    // The second half is the assertion that matters: absence must report absence.
+    CHECK(space.modulePath("libminecraftpe.so").empty());
+    CHECK(!space.moduleLoaded("libminecraftpe.so"));
+
+    // A nonsense soname must not match anything either.
+    CHECK(!space.moduleLoaded("this_is_not_a_real_library_9f3a.so"));
+
+    // An empty name must never match a region.
+    CHECK(!space.moduleLoaded(""));
+
+    // readable() must stay consistent with the same parsed table.
+    int local = 0;
+    CHECK(space.readable(&local, sizeof(local)));
+    CHECK(!space.readable(static_cast<void*>(nullptr), 1));
+    CHECK(!space.readable(reinterpret_cast<void*>(0x10), 1));
+
+    // The matching rule itself, exercised directly. This is the part a host test
+    // cannot reach through the public query, because there is no Minecraft image
+    // to find -- so it is tested as a predicate.
+    CHECK(bes::sdk::matchesLibraryPath("/data/app/libminecraftpe.so", "libminecraftpe.so"));
+    CHECK(bes::sdk::matchesLibraryPath("/data/app/base.apk!/lib/arm64-v8a/libminecraftpe.so",
+                                       "libminecraftpe.so"));
+    // The loader's marker for a replaced file must not defeat the match.
+    CHECK(bes::sdk::matchesLibraryPath("/data/app/libminecraftpe.so (deleted)", "libminecraftpe.so"));
+    // Whole-component matching: a longer name that merely ends with the soname
+    // must not match, or every diagnostic would report a false positive.
+    // This one ends with the exact soname but the character before it is 'e', not
+    // '/', so it must not match. A plain suffix compare accepts it -- and that
+    // false positive would make the mod believe the game was present.
+    CHECK(!bes::sdk::matchesLibraryPath("/data/app/fakelibminecraftpe.so", "libminecraftpe.so"));
+    // Same trap on the (deleted) form.
+    CHECK(!bes::sdk::matchesLibraryPath("/data/app/fakelibminecraftpe.so (deleted)",
+                                        "libminecraftpe.so"));
+    // And a longer name that does not end with the soname at all.
+    CHECK(!bes::sdk::matchesLibraryPath("/data/app/libfakeminecraftpe.so", "libminecraftpe.so"));
+    CHECK(!bes::sdk::matchesLibraryPath("", "libminecraftpe.so"));
+    CHECK(!bes::sdk::matchesLibraryPath("/data/app/libminecraftpe.so", ""));
+    // A path shorter than the soname must not read out of bounds.
+    CHECK(!bes::sdk::matchesLibraryPath("/a.so", "libminecraftpe.so"));
+    // Exact-name and no-directory cases.
+    CHECK(bes::sdk::matchesLibraryPath("libminecraftpe.so", "libminecraftpe.so"));
+}
+
 } // namespace
 
 int main() {
@@ -567,6 +626,7 @@ int main() {
     testIdentifierIndex();
     testLibcxxStringDecoding();
     testDiagnosticReportBuffer();
+    testModulePresence();
 
     std::printf("%d checks, %d failure(s)\n", gChecks, gFailures);
     return gFailures == 0 ? 0 : 1;

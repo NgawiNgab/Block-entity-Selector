@@ -3,6 +3,7 @@
 #include "diag/BlockTypeProbe.hpp"
 
 #include "core/ConfigStore.hpp"
+#include "core/GameEvidence.hpp"
 #include "core/GameHooks.hpp"
 #include "core/Logging.hpp"
 #include "core/Profile.hpp"
@@ -16,6 +17,7 @@
 #include "world/World.hpp"
 
 #include <bes/Version.hpp>
+#include <bes/sdk/AddressSpace.hpp>
 
 #include <pl/Input.hpp>
 #include <pl/ModMenu.hpp>
@@ -23,30 +25,26 @@
 #include <pl/memory/Hook.hpp>
 
 #include <dlfcn.h>
-#include <fcntl.h>
-#include <unistd.h>
 
 #include <atomic>
 
 #include <chrono>
-#include <cstring>
 #include <fstream>
 #include <sstream>
 
 namespace bes::core {
 namespace {
 
-/// The mod runs in the launcher process; only the Minecraft child has the game
-/// loaded, so everything is gated on that.
+/// True when the game's image is mapped into this process.
+///
+/// This used to compare argv[0] against two hardcoded strings. That gate was
+/// wrong twice over: Android sets `cmdline` inconsistently across zygote forks
+/// and may leave it empty, and the string it was asked to match has no bearing on
+/// whether the library is loaded. The evidence is now the mapping itself.
 bool runningInsideMinecraft() {
-    const int descriptor = open("/proc/self/cmdline", O_RDONLY);
-    if (descriptor < 0) return false;
-    char command[256]{};
-    const auto size = read(descriptor, command, sizeof(command) - 1);
-    close(descriptor);
-    if (size <= 0) return false;
-    return std::strcmp(command, "com.mojang.minecraftpe") == 0 ||
-           std::strcmp(command, "org.levimc.launcher:minecraft") == 0;
+    auto& space = sdk::AddressSpace::get();
+    if (space.regionCount() == 0) space.refresh();
+    return space.moduleLoaded("libminecraftpe.so");
 }
 
 using SwapBuffersFn = unsigned int (*)(void*, void*);
@@ -76,20 +74,26 @@ bool Runtime::load(pl::mod::ModContext& context) {
     ConfigStore::get().setPath(mConfigPath);
 
     // The profile must be ready before anything resolves a signature.
+    //
+    // No log::report of describe() here: dumpDiagnostics prints the profile and
+    // the resolver summary itself, so reporting them into the log buffer as well
+    // made every dump carry ~40 duplicated lines. The log is for events, the
+    // report body is for state.
     Profile::get().load(mBundledProfilePath, mProfileOverridePath);
-    log::report(Profile::get().describe());
 
-    if (!runningInsideMinecraft()) {
-        log::info("loaded outside the game process; hooks deferred");
+    const auto evidence = EvidenceCollector::collect();
+    log::info(std::string("load: libminecraftpe.so ") +
+              (evidence.libraryMapped ? "mapped" : "NOT mapped") + " (maps=" +
+              (evidence.libraryPath.empty() ? std::string("-") : evidence.libraryPath) + ", dlopen=" +
+              (evidence.loaderSeesLibrary ? "yes" : "no") + ", cmdline=\"" + evidence.processName +
+              "\", comm=\"" + evidence.processCom + "\")");
+
+    if (!evidence.libraryMapped) {
+        log::info("load: game library not present; hooks deferred to enable()");
         return true;
     }
 
-    if (void* game = dlopen("libminecraftpe.so", RTLD_NOW | RTLD_NOLOAD)) {
-        prepareGame();
-        dlclose(game);
-    } else {
-        log::warn("libminecraftpe.so not mapped yet; will resolve on enable");
-    }
+    prepareGame();
     return true;
 }
 
@@ -97,7 +101,10 @@ bool Runtime::prepareGame() {
     if (mInstalled) return true;
 
     Resolver::get().resolveAll("libminecraftpe.so");
-    log::report(Resolver::get().summary());
+    // No log::report(summary()) here: the summary is state, not an event, and
+    // dumpDiagnostics already prints it. Reporting it as well duplicated the
+    // whole block (~40 lines) into every dump. resolveAll() itself logs the
+    // one-line outcome that the log genuinely needs.
     world::World::get().installBlockLookup();
     const bool hooksInstalled = installHooks();
     // Only claim to be installed when the per-tick hook actually landed. A wrong
@@ -111,38 +118,30 @@ bool Runtime::enable(pl::mod::ModContext&) {
 
     // Menu registration and the on-screen button are launcher services: they
     // talk to the Mod Menu bridge and nothing else, and touch no game state.
-    // They therefore run before the game-process check below. Registration used
-    // to sit after that check, which meant any process whose argv[0] did not
-    // match the two expected strings silently registered nothing at all.
+    // They therefore run before the game-presence check below. Registration used
+    // to sit after that check, which meant a process the check rejected silently
+    // registered nothing at all.
     modules::SelectorModule::get().registerInMenu(mModId);
     launcher::Picker::get().install(mModId);
 
-    if (!runningInsideMinecraft()) {
-        // Everything past this point needs libminecraftpe.so: signature
-        // resolution, the update hook, the frame tick and the renderer. Say so
-        // out loud, because an unregistered module now has exactly one remaining
-        // explanation and it should not have to be guessed.
-        log::warn("enable: not the Minecraft process; menu registered, game hooks deferred");
+    // 1. Presence. Decided by the mapping, not by a process name.
+    const auto evidence = EvidenceCollector::collect();
+    if (!evidence.libraryMapped) {
+        // Nothing past this point can work, and the reason is presence, not
+        // resolution -- say which, so the report is not read as a pattern failure.
+        log::warn("enable: libminecraftpe.so is not mapped in this process (cmdline=\"" +
+                  evidence.processName + "\", comm=\"" + evidence.processCom + "\", dlopen=" +
+                  (evidence.loaderSeesLibrary ? "yes" : "no") + "); hooks deferred");
+        log::info("enable: game hooks NOT installed (library absent)");
         return true;
     }
 
+    // 2. Resolution + 3. hooks. prepareGame() performs both and reports its own
+    //   outcome; the flag it sets reflects the hook, never the library.
     if (!mInstalled) {
-        if (void* game = dlopen("libminecraftpe.so", RTLD_NOW | RTLD_NOLOAD)) {
-            prepareGame();
-            dlclose(game);
-        } else {
-            // This branch used to be silent, which made "the game never ticked"
-            // indistinguishable from "the game ticked but found nothing". Every
-            // hook this mod installs hangs off prepareGame(), so say plainly that
-            // nothing was installed rather than letting a later subsystem report
-            // a downstream symptom as if it were the cause.
-            log::warn("enable: libminecraftpe.so is not mapped; no hooks installed, "
-                      "the world will never update");
-        }
+        prepareGame();
     }
 
-    // Report the resulting state once, so the diagnostics dump answers "how far
-    // did startup get?" without needing to infer it from other lines.
     log::info(std::string("enable: game hooks ") + (mInstalled ? "installed" : "NOT installed"));
     installFrameTick();
 
@@ -291,12 +290,28 @@ std::string Runtime::dumpDiagnostics() {
     report << "override profile: " << mProfileOverridePath.string() << '\n';
     report << '\n' << Profile::get().describe();
     report << '\n' << Resolver::get().summary();
-    // Startup state first: these four answers decide whether anything below can
-    // possibly work, and they are exactly what a "nothing happens" report needs.
-    report << "\ngame process: " << (runningInsideMinecraft() ? "yes" : "NO") << '\n';
-    report << "game hooks: " << (mInstalled ? "installed" : "NOT installed") << '\n';
-    report << "frame tick: " << (mFrameTickInstalled ? "installed" : "NOT installed") << '\n';
-    report << "local player: " << (mLastPlayer ? "yes" : "NOT yet seen") << '\n';
+    // The three states are reported separately and in order, because each one can
+    // fail on its own and they are not interchangeable: a mapped library does not
+    // mean the signatures resolved, and resolved signatures do not mean a hook
+    // installed. Reading them top to bottom localises the break in one glance.
+    const auto evidence = EvidenceCollector::collect();
+
+    report << "\n== startup ==\n";
+    report << "1. library mapped:   " << (evidence.libraryMapped ? "yes" : "NO") << '\n';
+    if (!evidence.libraryPath.empty()) report << "   path:             " << evidence.libraryPath << '\n';
+    report << "   loader (NOLOAD):  " << (evidence.loaderSeesLibrary ? "found" : "not found");
+    if (!evidence.loaderSeesLibrary && !evidence.loaderNote.empty()) {
+        report << "  (" << evidence.loaderNote << ')';
+    }
+    report << '\n';
+    report << "2. signatures:       " << Resolver::get().resolvedCount() << '/' << SigCount << " resolved\n";
+    report << "3. game hooks:       " << (mInstalled ? "installed" : "NOT installed") << '\n';
+    report << "   frame tick:       " << (mFrameTickInstalled ? "installed" : "NOT installed") << '\n';
+    report << "   local player:     " << (mLastPlayer ? "yes" : "NOT yet seen") << '\n';
+
+    // Identity only: these never gate anything, they explain a surprising result.
+    report << "   cmdline:          \"" << evidence.processName << "\"\n";
+    report << "   comm:             \"" << evidence.processCom << "\"\n";
     report << "\nrenderer installed: " << (render::HighlightRenderer::get().installed() ? "yes" : "no") << '\n';
     report << "renderer frames: " << render::HighlightRenderer::get().frames() << '\n';
     report << "last draw vertices: " << render::HighlightRenderer::get().lastDrawVertices() << '\n';

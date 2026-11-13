@@ -24,7 +24,7 @@ mkdir -p "$(dirname "$OUT")"
     -Iinclude -Isrc -Itests/stubs \
     -o "$OUT" \
     tests/test_main.cpp \
-    src/core/Profile.cpp src/core/Rtti.cpp src/core/Logging.cpp \
+    src/core/Profile.cpp src/core/Rtti.cpp src/core/Logging.cpp src/core/AddressSpace.cpp \
     src/selection/Selection.cpp src/selection/Identifier.cpp src/selection/ScannerState.cpp \
     -ldl
 

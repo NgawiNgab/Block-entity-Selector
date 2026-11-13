@@ -152,9 +152,22 @@ void Picker::pickUnderCrosshair() {
     // world at all.
     const auto& snapshot = world::World::get().snapshot();
     if (!snapshot.valid) {
-        core::log::warn("picker: no world snapshot yet -- the game hook is not ticking "
-                        "(check the diagnostics dump: 'game hooks' / 'local player')");
+        // Once per state change, not once per tap: the condition is either true
+        // for a run of taps or it is not, and repeating it buries the startup
+        // lines that explain why.
+        if (!mLoggedNoSnapshot) {
+            mLoggedNoSnapshot = true;
+            core::log::warn("picker: no world snapshot yet -- the game hook is not ticking "
+                            "(see the diagnostics dump: 'startup' section)");
+        }
         return;
+    }
+
+    // A working snapshot means the previous warning no longer applies, so the
+    // next failure starts a fresh run of logging.
+    if (mLoggedNoSnapshot) {
+        mLoggedNoSnapshot = false;
+        core::log::info("picker: world snapshot is now available");
     }
     core::log::info("picker: nothing under the crosshair or at the player's feet");
 }

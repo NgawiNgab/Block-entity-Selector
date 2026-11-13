@@ -89,6 +89,7 @@ bool Resolver::resolveAll(std::string_view libraryName) {
         mOffOrigins[index] = candidates.empty() ? std::string{} : candidates.front().origin;
     }
 
+    mResolvedCount = resolvedCount;
     mResolved = true;
     refreshSummary();
 

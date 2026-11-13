@@ -31,6 +31,12 @@ public:
     /// Fast path called from hooks/tick callbacks, no locking.
     std::uintptr_t address(SigId id) const;
 
+    /// How many signatures resolved, and how many exist. Reported separately so
+    /// the diagnostics can state resolution as a number instead of leaving it to
+    /// be inferred from whether a later line is present.
+    std::size_t resolvedCount() const noexcept { return mResolvedCount; }
+    static constexpr std::size_t totalCount() noexcept { return SigCount; }
+
     /// Offset chosen for a category, or the profile default when nothing was
     /// confirmed yet.
     std::size_t offset(OffId id) const;
@@ -58,6 +64,7 @@ private:
     std::size_t mOffsets[OffCount]{};
     std::string mOffOrigins[OffCount];
     std::string mSummary;
+    std::size_t mResolvedCount = 0;
     bool mResolved = false;
 };
 

@@ -2,8 +2,22 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <string_view>
 
 namespace bes::sdk {
+
+/// True when a `/proc/self/maps` path column refers to `soname`.
+///
+/// Split out as a pure predicate so it can be tested without the library being
+/// present: a host test cannot map `libminecraftpe.so`, so a check that only went
+/// through the public query would never exercise the matching rule itself.
+///
+/// Handles the two shapes the path column takes: a plain absolute path, and a
+/// path with the loader's ` (deleted)` suffix when the file was replaced on disk.
+/// Matching is by whole path component, so `libfoo.so` must not match
+/// `libbarfoo.so`.
+bool matchesLibraryPath(std::string_view path, std::string_view soname);
 
 /// Answers "may I read this address?" by consulting `/proc/self/maps`.
 ///
@@ -34,6 +48,26 @@ public:
     /// Number of mapped readable regions found, for diagnostics.
     std::size_t regionCount() const noexcept { return mCount; }
 
+    /// True when any mapped region's path ends with `libraryName`.
+    ///
+    /// This is the primary "is the game loaded in this process?" signal, and it
+    /// is deliberately independent of the dynamic loader. `dlopen(RTLD_NOLOAD)`
+    /// needs the linker to find the file by name in the calling namespace and
+    /// returns null when it cannot, even though the library is mapped -- so it
+    /// reports false negatives. `/proc/self/maps` reports what is actually there.
+    bool moduleLoaded(std::string_view libraryName) const;
+
+    /// The mapped path recorded for `libraryName`, or empty when absent.
+    std::string modulePath(std::string_view libraryName) const;
+
+    /// How many mapped regions carry a pathname.
+    ///
+    /// This exists as a positive control: if the path column stops being parsed,
+    /// every "is it loaded?" query silently answers no, and a test built only from
+    /// negative assertions would still pass. Any real process has at least one
+    /// file-backed mapping.
+    std::size_t fileBackedRegionCount() const;
+
     static constexpr std::size_t kMaxRegions = 4096;
 
 private:
@@ -42,6 +76,8 @@ private:
     struct Region {
         std::uintptr_t begin = 0;
         std::uintptr_t end = 0;
+        /// Path column of the maps line; empty for anonymous mappings.
+        std::string path;
     };
 
     Region mRegions[kMaxRegions]{};

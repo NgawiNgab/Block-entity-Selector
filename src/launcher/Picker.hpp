@@ -32,6 +32,13 @@ private:
     std::string pickBlockAtFeet();
 
     bool mInstalled = false;
+
+    /// Last "no world snapshot" state that was logged.
+    ///
+    /// Every tap used to append the same warning, and 45 identical lines in one
+    /// session is enough to push the startup lines out of the bounded log buffer.
+    /// The warning is worth exactly one line per state change, not one per tap.
+    bool mLoggedNoSnapshot = false;
 };
 
 }
