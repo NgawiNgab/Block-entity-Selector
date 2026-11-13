@@ -52,4 +52,9 @@ std::string takeReport() {
     return copy;
 }
 
+std::string peekReport() {
+    std::lock_guard lock(reportMutex);
+    return reportBuffer;
+}
+
 } // namespace bes::core::log

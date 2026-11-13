@@ -1,3 +1,4 @@
+#include "core/Logging.hpp"
 #include "core/Profile.hpp"
 #include "core/Rtti.hpp"
 #include "selection/BlockCursor.hpp"
@@ -527,6 +528,29 @@ void testLibcxxStringDecoding() {
     }
 }
 
+void testDiagnosticReportBuffer() {
+    // The diagnostics dump used to call takeReport(), which empties the buffer.
+    // A second dump therefore lost every startup line -- exactly the lines needed
+    // to explain a "nothing happens" report. peekReport() must be non-destructive.
+    bes::core::log::peekReport();  // start from a clean slate
+
+    bes::core::log::report("line one");
+    bes::core::log::report("line two");
+
+    const auto first = bes::core::log::peekReport();
+    CHECK(first.find("line one") != std::string::npos);
+    CHECK(first.find("line two") != std::string::npos);
+
+    // Reading twice must yield the same content: this is the actual regression.
+    const auto second = bes::core::log::peekReport();
+    CHECK(second == first);
+
+    // takeReport() still clears, which is what callers who own the buffer want.
+    const auto taken = bes::core::log::takeReport();
+    CHECK(taken == first);
+    CHECK(bes::core::log::peekReport().empty());
+}
+
 } // namespace
 
 int main() {
@@ -542,6 +566,7 @@ int main() {
     testIdentifierSyntax();
     testIdentifierIndex();
     testLibcxxStringDecoding();
+    testDiagnosticReportBuffer();
 
     std::printf("%d checks, %d failure(s)\n", gChecks, gFailures);
     return gFailures == 0 ? 0 : 1;

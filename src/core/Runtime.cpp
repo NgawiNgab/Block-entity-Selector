@@ -99,9 +99,11 @@ bool Runtime::prepareGame() {
     Resolver::get().resolveAll("libminecraftpe.so");
     log::report(Resolver::get().summary());
     world::World::get().installBlockLookup();
-    installHooks();
-    mInstalled = true;
-    return true;
+    const bool hooksInstalled = installHooks();
+    // Only claim to be installed when the per-tick hook actually landed. A wrong
+    // flag here hides the single most consequential failure in the whole mod.
+    mInstalled = hooksInstalled;
+    return mInstalled;
 }
 
 bool Runtime::enable(pl::mod::ModContext&) {
@@ -128,9 +130,20 @@ bool Runtime::enable(pl::mod::ModContext&) {
         if (void* game = dlopen("libminecraftpe.so", RTLD_NOW | RTLD_NOLOAD)) {
             prepareGame();
             dlclose(game);
+        } else {
+            // This branch used to be silent, which made "the game never ticked"
+            // indistinguishable from "the game ticked but found nothing". Every
+            // hook this mod installs hangs off prepareGame(), so say plainly that
+            // nothing was installed rather than letting a later subsystem report
+            // a downstream symptom as if it were the cause.
+            log::warn("enable: libminecraftpe.so is not mapped; no hooks installed, "
+                      "the world will never update");
         }
     }
 
+    // Report the resulting state once, so the diagnostics dump answers "how far
+    // did startup get?" without needing to infer it from other lines.
+    log::info(std::string("enable: game hooks ") + (mInstalled ? "installed" : "NOT installed"));
     installFrameTick();
 
     ConfigStore::get().load([this](const nlohmann::json& document) {
@@ -192,15 +205,20 @@ void Runtime::persistConfig() {
     ConfigStore::get().save(document);
 }
 
-void Runtime::installHooks() {
+bool Runtime::installHooks() {
     // Per-tick game hook: the only source of a valid local player pointer.
-    gamehooks::install([](void* player) { Runtime::get().onLocalPlayerTick(player); });
+    // Its failure mode is the important one -- without it there is no player, no
+    // snapshot, no scan and no blocks -- so the result is propagated instead of
+    // discarded.
+    const bool tickHookInstalled =
+        gamehooks::install([](void* player) { Runtime::get().onLocalPlayerTick(player); });
 
     // The keybind is delivered through the mod menu's own onKeybind hook, which
     // is registered in SelectorModule::registerInMenu and only fires for the key
     // the user bound to this module. Do *not* also listen on
     // pl::input::registerKeyCallback here: that callback sees every key the user
     // types, which would toggle the mod on any keystroke.
+    return tickHookInstalled;
 }
 
 void Runtime::onLocalPlayerTick(void* player) {
@@ -273,6 +291,12 @@ std::string Runtime::dumpDiagnostics() {
     report << "override profile: " << mProfileOverridePath.string() << '\n';
     report << '\n' << Profile::get().describe();
     report << '\n' << Resolver::get().summary();
+    // Startup state first: these four answers decide whether anything below can
+    // possibly work, and they are exactly what a "nothing happens" report needs.
+    report << "\ngame process: " << (runningInsideMinecraft() ? "yes" : "NO") << '\n';
+    report << "game hooks: " << (mInstalled ? "installed" : "NOT installed") << '\n';
+    report << "frame tick: " << (mFrameTickInstalled ? "installed" : "NOT installed") << '\n';
+    report << "local player: " << (mLastPlayer ? "yes" : "NOT yet seen") << '\n';
     report << "\nrenderer installed: " << (render::HighlightRenderer::get().installed() ? "yes" : "no") << '\n';
     report << "renderer frames: " << render::HighlightRenderer::get().frames() << '\n';
     report << "last draw vertices: " << render::HighlightRenderer::get().lastDrawVertices() << '\n';
@@ -306,7 +330,9 @@ std::string Runtime::dumpDiagnostics() {
         report << '\n';
     }
 
-    report << '\n' << log::takeReport();
+    // peek, not take: a diagnostics dump is read-only. Taking the buffer emptied
+    // it, so a second dump lost the startup lines that explain the first one.
+    report << '\n' << log::peekReport();
 
     const auto path = mDataDirectory / "diagnostics.txt";
     std::error_code error;
