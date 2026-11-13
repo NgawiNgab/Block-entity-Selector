@@ -31,7 +31,7 @@ private:
     Runtime() = default;
 
     bool prepareGame();
-    void installHooks();
+    bool installHooks();
     void onLocalPlayerTick(void* player);
     bool installFrameTick();
     void uninstallFrameTick();

@@ -143,7 +143,20 @@ void Picker::pickUnderCrosshair() {
         selection.clear();
         selection::Scanner::get().reset();
         core::log::info("picker: selection cleared");
+        return;
     }
+
+    // Nothing to pick and nothing to clear. This is the "the button does nothing"
+    // report, so name the reason instead of exiting silently: without a live
+    // snapshot there is no player, and without a player the picker cannot see the
+    // world at all.
+    const auto& snapshot = world::World::get().snapshot();
+    if (!snapshot.valid) {
+        core::log::warn("picker: no world snapshot yet -- the game hook is not ticking "
+                        "(check the diagnostics dump: 'game hooks' / 'local player')");
+        return;
+    }
+    core::log::info("picker: nothing under the crosshair or at the player's feet");
 }
 
 } // namespace bes::launcher

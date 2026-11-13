@@ -229,6 +229,29 @@ The `Block -> BlockType` step still uses the candidate offsets in
 the report shows a valid vtable and a finite box, the candidate that produced it
 is the correct offset -- record which one in `resources/signatures.json`.
 
+
+### 8.2 Reading the diagnostics dump
+
+The header now answers "how far did startup get?" before anything else:
+
+| Line | Meaning when it says NO / NOT |
+|---|---|
+| `game process` | The mod is running outside `com.mojang.minecraftpe` / `org.levimc.launcher:minecraft`. Menu registration still happens, but nothing that needs the game. |
+| `game hooks` | `ClientInstance::update` was not hooked. Without it there is no local player, no snapshot, no scan and no highlight — everything downstream reports a symptom of this one cause. |
+| `frame tick` | `eglSwapBuffers` was not hooked, so the per-frame scan never advances. |
+| `local player` | The hook is installed but has not produced a player pointer yet. Normal for a few seconds on a loading screen; permanent means the hook target is wrong for this build. |
+
+A key operational note: `takeReport()` used to be called by the dump itself, which
+emptied the log buffer. Every dump therefore showed only what had happened since
+the previous dump, and the startup lines were gone exactly when a "nothing
+happens" report needed them. The dump now uses `peekReport()`, so repeated dumps
+are cumulative and the buffer is only cleared when a caller explicitly takes it.
+
+If `game hooks` reads `NOT installed` while `game process` reads `yes`, the
+signature for `client_instance_update` does not match this build. That is a
+Zaphkiel job, not a code change: the profile needs a pattern derived from the
+running binary.
+
 ## 9. Known limits of the current design
 
 - **Block scanning is bounded** by design (radius from the player). Bedrock exposes no public
