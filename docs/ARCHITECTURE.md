@@ -37,6 +37,46 @@ A short tour of how a selection turns into pixels, and which piece owns which co
 Rule of thumb: **pointers never cross threads as ownership**; `Selection` and `FrameTargets` carry
 value types (`BlockPos`, `AABB`, strings) so the render path cannot follow a freed actor.
 
+## Identifier layer
+
+Selection is by **identifier** (`minecraft:diamond_ore`, `minecraft:zombie`),
+typed or pasted by the player. `src/selection/Identifier.{hpp,cpp}` is the only
+place that interprets those strings, and it touches no game pointer, offset or
+pattern, so it is fully host-testable.
+
+```
+player input ──▶ normalise() ──▶ resolve()
+                                   │
+                     ┌─────────────┴─────────────┐
+                     ▼                           ▼
+              Confidence level            ClassIndex (1:Many)
+         Invalid / Unverified /           minecraft:villager
+      ObservedLive / Documented /          ├─ Villager
+    RegistryConfirmed / RegistryResolved   └─ VillagerV2
+                     │                           │
+                     ▼                           ▼
+              shown in the menu        consumed by Scanner/entityMatches
+```
+
+Two rules make this honest rather than decorative:
+
+**A typed identifier is a claim, not a fact.** Every `Target` carries a
+`Confidence`. The menu label prints it, so `minecraft:custom_mob` shows as
+`[unverified]` until the mod actually sees one in the world, and
+`minecraft:zombie` shows `[documented]` — never `[confirmed]`, which is reserved
+for an answer from the game's own registry lookup. The registry-backed levels are
+defined and unimplemented; see `docs/UPDATING.md`.
+
+**Entity identifiers are 1:Many.** One id can be backed by several RTTI classes
+(`minecraft:villager` → `Villager` and `VillagerV2`). `ClassIndex` holds those
+bindings, additive and deduplicated, keeping the strongest evidence per pair. The
+scanner only asks the index; adding a new evidence source is a `bind()` call, not
+a scanner edit. That separation is what lets a runtime registry lookup be bolted
+on later without touching matching logic.
+
+Evidence sources, weakest to strongest: hand-typed (nothing), observed live (the
+mod saw the block id or actor class), bundled documented table, game registry.
+
 ## Key decisions
 
 **RTTI over offsets for entity identity.** Every polymorphic Bedrock actor has a `type_info` pointer
@@ -78,6 +118,7 @@ for anyone who prefers the vanilla look.
 | `src/core/Profile.cpp` | The JSON schema: candidate lists, override merging. Change here first if you add a signature. |
 | `src/core/Resolver.cpp` | Signature resolution order, pattern → vtable fallback, offset confirmation. |
 | `src/core/Rtti.cpp` | Actor identity. The single most important piece for "works without signatures". |
+| `src/selection/Identifier.cpp` | The identifier layer: normalisation, confidence, 1:Many class index. Game-free and unit tested. |
 | `src/selection/Scanner.cpp` | Per-tick work: entity scan throttling, block budget, dimension-change invalidation. |
 | `src/selection/BlockCursor.hpp` | The resumable block walk, header-only and game-free so it can be unit tested. |
 | `src/selection/ScannerState.cpp` | The parts of `Scanner` that touch no game state (`get`, settings, reset, targets); split out so the host tests can link them without `World`. |

@@ -166,7 +166,70 @@ looks broken.
 
 ---
 
-## 8. Known limits of the current design
+## 8. Identifier validation (registry lookups)
+
+`src/selection/Identifier.cpp` defines six confidence levels. Four are
+implemented; two are not:
+
+| Level | Source | Status |
+|---|---|---|
+| `invalid` | syntax check | implemented |
+| `unverified` | nothing yet | implemented |
+| `observed-live` | the mod saw the block id / actor class | implemented |
+| `documented` | the bundled table | implemented |
+| `registry-confirmed` | the game answered "this id exists" | **not implemented** |
+| `registry-resolved` | the game supplied the backing class set | **not implemented** |
+
+To reach the last two, the following must be located with Zaphkiel before any
+code is written — the ids are sentinel values, not evidence:
+
+- **Block identifier lookup.** The pointer chain used by `World::blockNameFromBlock()`
+  currently guesses. The real accessor is `Block::getTypeName`/`BlockType`'s stored
+  identifier; `struct<Block><offset>` hits plus `findclass<Block>` are the evidence
+  needed.
+- **Actor identifier lookup.** The mapping from `minecraft:zombie` to the RTTI class
+  `Zombie` lives in the actor-type registry (`EntityRegistry` / `ActorDefinition`
+  identifiers). `findclass<ActorDefinition>` and `strfn<"minecraft:zombie">` are the
+  starting points.
+- **Registry singleton accessors**, if a direct `isValidIdentifier` exists.
+
+Until then, `ClassIndex` treats every entity mapping as `documented`, and an id no
+row covers stays `unverified`. That is the correct behaviour: the mod highlights
+what it can see and says so, rather than asserting an id exists.
+
+
+### 8.1 Runtime probe for the block identifier (in progress)
+
+Static analysis reached its limit on the block identifier. Zaphkiel confirmed
+that `BlockDefinition` registers an `"identifier"` schema field by name, that
+`BlockType` is polymorphic with a 134-slot vtable, and that eight of its members
+are readable through getters -- but **no vtable slot and no scanned member reads
+a `std::string`**, so the identifier's byte offset is still unknown.
+
+`Block / Entity Selector -> Debug -> Probe BlockType` answers this from a live
+object instead. It takes the block the player is standing in, walks
+`Block -> BlockType`, and writes `blocktype_probe.txt` next to `config.json`.
+
+What the report contains, and how to read it:
+
+| Section | Meaning |
+|---|---|
+| `vtable[0]`, `vtable[1]` | Confirms the object really is polymorphic. A `BlockType` vtable is at RVA `0x13ded6f0` in 1.26.6x; `vtable[1]` should be a small RVA in segment 0. |
+| `box(+0x138)` | The confirmed AABB getter (vtable slot 130). Real block coordinates here mean the object is the right one. |
+| `qword(+0x1e8)`, `qword(+0x200)` | The two members static analysis flagged. `+0x1e8` is read 9 times and written 0; `+0x200` is read as a byte at 4 sites. Recorded raw so runtime settles what they are. |
+| `std::string scan` | Every 8-byte slot that decodes as a libc++ string. **A line marked `identifier-shaped` is the answer** -- that offset is the block identifier. |
+| `pointer scan` | Pointer members and what their targets begin with, so a `BlockDefinition` back-pointer can be recognised. |
+
+The probe is read-only: it never calls a virtual function, and every dereference
+is checked against `/proc/self/maps` first (`sdk::AddressSpace`). A failed check
+writes nothing and logs a warning rather than faulting the game.
+
+The `Block -> BlockType` step still uses the candidate offsets in
+`World::blockTypeOf`, because static RE has not pinned that member either. When
+the report shows a valid vtable and a finite box, the candidate that produced it
+is the correct offset -- record which one in `resources/signatures.json`.
+
+## 9. Known limits of the current design
 
 - **Block scanning is bounded** by design (radius from the player). Bedrock exposes no public
   loaded-chunk iterator that is cheap enough to walk per frame, and the mod avoids the internal
@@ -176,8 +239,12 @@ looks broken.
   the player's feet. Block-under-crosshair picking needs the player's view ray plus a block raycast;
   the hooks for that are listed above (`level_get_hit_result`, `hit_result_get_entity`) and are wired
   for a future release.
-- **Entity identity is by class**, not by variant. `Zombie` covers every zombie variant the game
-  reports under that class; subclasses appear as separate entries in the picker.
+- **Entity identity is by class set.** An identifier expands to every RTTI class bound to it
+  (`minecraft:villager` -> `Villager`, `VillagerV2`). A class nobody has bound is not matched:
+  `minecraft:zombie` will not highlight a `Husk`, because nothing has established that the
+  identifier covers it. Widening a mapping requires evidence, not a guess.
+- **Identifier validation stops at syntax + the bundled table** until the registry lookups above
+  are located. A hand-typed id is never presented as confirmed.
 - **Only loaded entities exist.** The mod highlights what the client already knows about: mobs
   outside the server's view distance are not in the actor list and cannot be drawn.
 - **Nothing is verified on device yet.** The bundled patterns and offsets are seeded from

@@ -1,8 +1,11 @@
 #include "modules/SelectorModule.hpp"
 
+#include "diag/BlockTypeProbe.hpp"
+
 #include "core/Logging.hpp"
 #include "core/Resolver.hpp"
 #include "core/Runtime.hpp"
+#include "selection/Identifier.hpp"
 #include "selection/Scanner.hpp"
 #include "world/World.hpp"
 
@@ -57,7 +60,40 @@ float parseFloat(std::string_view value, float fallback) {
 std::string targetSummary() {
     const auto target = selection::Selection::get().current();
     if (!target) return "Nothing selected";
-    return (target.kind == selection::Kind::Block ? "Block: " : "Entity: ") + target.prettyName;
+
+    std::string text = (target.kind == selection::Kind::Block ? "Block: " : "Entity: ") + target.prettyName;
+    // The confidence label is part of the label, not a footnote: a typed
+    // identifier that nothing has confirmed must not look like a verified one.
+    text += " [";
+    text += identifier::confidenceName(target.confidence);
+    text += "]";
+
+    if (target.kind == selection::Kind::Entity) {
+        if (target.classes.empty()) {
+            text += "  no class mapping yet";
+        } else {
+            text += "  classes:";
+            for (const auto& name : target.classes) text += " " + name;
+        }
+    }
+    return text;
+}
+
+/// Applies whatever the user typed. Returns the new label, which the menu shows
+/// verbatim so a rejected identifier explains itself.
+std::string applyIdentifierInput(const std::string& raw, selection::Kind kind) {
+    auto& selectionStore = selection::Selection::get();
+    const bool ok = kind == selection::Kind::Block ? selectionStore.selectBlock(raw)
+                                                   : selectionStore.selectEntity(raw);
+    selection::Scanner::get().reset();
+    if (!ok) {
+        const auto entry = identifier::resolve(kind == selection::Kind::Block ? identifier::Domain::Block
+                                                                             : identifier::Domain::Entity,
+                                              raw);
+        core::log::warn("menu: rejected identifier \"" + raw + "\": " + entry.evidence);
+        return "Rejected: " + entry.evidence;
+    }
+    return targetSummary();
 }
 
 } // namespace
@@ -115,6 +151,7 @@ bool SelectorModule::registerInMenu(const std::string& modId) {
     builder.config("clearSelection", "Clear Selection", pl::modmenu::ConfigType::Button, "false");
     builder.config("rescan", "Rescan Now", pl::modmenu::ConfigType::Button, "false");
     builder.config("diagnostics", "Diagnostics Dump", pl::modmenu::ConfigType::Button, "false");
+    builder.config("probeBlockType", "Probe BlockType", pl::modmenu::ConfigType::Button, "false");
 
     if (!builder.registerModule()) {
         core::log::error("menu: registration rejected by the launcher");
@@ -172,6 +209,31 @@ bool SelectorModule::registerInMenu(const std::string& modId) {
         info.description = targetSummary();
         schema.node(std::move(info));
     }
+
+    // Identifier entry. Free text by design: players type or paste ids, and the
+    // mod validates them against the game's own name table where it can. The
+    // status node above reports whether an id is confirmed, merely well-formed,
+    // or rejected.
+    {
+        auto blockId = node("blockId", "blockId", "selection", "Block Identifier",
+                            pl::modmenu::ConfigControlTypeV2::Text);
+        blockId.description = "e.g. minecraft:diamond_ore. Leave blank to keep the current selection.";
+        blockId.placeholder = "minecraft:diamond_ore";
+        blockId.maxLength = 128;
+        schema.node(std::move(blockId));
+
+        auto entityId = node("entityId", "entityId", "selection", "Entity Identifier",
+                             pl::modmenu::ConfigControlTypeV2::Text);
+        entityId.description = "e.g. minecraft:zombie. Expands to every RTTI class mapped to it.";
+        entityId.placeholder = "minecraft:zombie";
+        entityId.maxLength = 128;
+        schema.node(std::move(entityId));
+
+        schema.node(node("applyBlock", "applyBlock", "selection", "Select Block by Identifier",
+                         pl::modmenu::ConfigControlTypeV2::Button));
+        schema.node(node("applyEntity", "applyEntity", "selection", "Select Entity by Identifier",
+                         pl::modmenu::ConfigControlTypeV2::Button));
+    }
     toggle("seeThrough", "visual", "See Through Walls", "true");
     color("blockColor", "Block Colour", style.blockColor);
     color("entityColor", "Entity Colour", style.entityColor);
@@ -188,6 +250,8 @@ bool SelectorModule::registerInMenu(const std::string& modId) {
                      pl::modmenu::ConfigControlTypeV2::Button));
     schema.node(node("rescan", "rescan", "scan", "Rescan Now", pl::modmenu::ConfigControlTypeV2::Button));
     schema.node(node("diagnostics", "diagnostics", "debug", "Dump Diagnostics",
+                     pl::modmenu::ConfigControlTypeV2::Button));
+    schema.node(node("probeBlockType", "probeBlockType", "debug", "Probe BlockType",
                      pl::modmenu::ConfigControlTypeV2::Button));
 
     if (!pl::modmenu::setConfigSchemaJson(mModuleId, schema.toJson())) {
@@ -293,6 +357,26 @@ void SelectorModule::onConfigChanged(std::string_view key, std::string_view valu
         style.entityColor = bes::sdk::Color::fromArgb(parseColor(value, 0xFFFFA502));
     } else if (key == "playerColor") {
         style.entityPlayerColor = bes::sdk::Color::fromArgb(parseColor(value, 0xFF3B82F6));
+    } else if (key == "blockId") {
+        mPendingBlockId = std::string(value);
+        return;
+    } else if (key == "entityId") {
+        mPendingEntityId = std::string(value);
+        return;
+    } else if (key == "applyBlock") {
+        if (mPendingBlockId.empty()) {
+            core::log::warn("menu: Select Block pressed with an empty identifier");
+            return;
+        }
+        applyIdentifierInput(mPendingBlockId, selection::Kind::Block);
+        return;
+    } else if (key == "applyEntity") {
+        if (mPendingEntityId.empty()) {
+            core::log::warn("menu: Select Entity pressed with an empty identifier");
+            return;
+        }
+        applyIdentifierInput(mPendingEntityId, selection::Kind::Entity);
+        return;
     } else if (key == "clearSelection") {
         selection::Selection::get().clear();
         selection::Scanner::get().reset();
@@ -302,6 +386,9 @@ void SelectorModule::onConfigChanged(std::string_view key, std::string_view valu
         return;
     } else if (key == "diagnostics") {
         core::Runtime::get().dumpDiagnostics();
+        return;
+    } else if (key == "probeBlockType") {
+        diag::BlockTypeProbe::get().dumpNearPlayer();
         return;
     } else {
         return;

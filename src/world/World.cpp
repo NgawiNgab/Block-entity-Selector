@@ -4,9 +4,11 @@
 #include "core/Resolver.hpp"
 #include "core/Rtti.hpp"
 
+#include <bes/sdk/AddressSpace.hpp>
 #include <bes/sdk/Memory.hpp>
 
 #include <algorithm>
+#include <cstring>
 #include <cmath>
 #include <sstream>
 
@@ -263,6 +265,41 @@ std::string World::blockName(void* blockSource, const bes::sdk::BlockPos& pos) {
 
 void* World::currentBlockSource() {
     return mSnapshot.blockSource;
+}
+
+void* World::blockAt(void* blockSource, const bes::sdk::BlockPos& pos) {
+    if (!blockSource || !gGetBlock) return nullptr;
+    return const_cast<void*>(gGetBlock(blockSource, &pos, 0));
+}
+
+void* World::blockTypeOf(const void* block) {
+    if (!block) return nullptr;
+
+    // This path reads a live game object at offsets that static RE has not
+    // pinned, so every dereference is checked against the real memory map: a
+    // wrong candidate must fail the check, not fault the game.
+    auto& space = sdk::AddressSpace::get();
+    // Load the map first: every readiness check below is meaningless until it
+    // exists, and `readable` fails closed while it does not.
+    if (space.regionCount() == 0 && !space.refresh()) return nullptr;
+    if (!space.readable(block, 8)) return nullptr;
+
+    for (const auto offset : kBlockTypeOffsetCandidates) {
+        if (!space.readable(static_cast<const std::byte*>(block) + offset, 8)) continue;
+
+        const auto candidate = sdk::fieldPointer(block, offset);
+        if (!space.readable(candidate, 16)) continue;
+
+        std::uintptr_t vtable = 0;
+        std::memcpy(&vtable, candidate, sizeof(vtable));
+        if (!space.readable(reinterpret_cast<const void*>(vtable), 8)) continue;
+
+        std::uintptr_t firstEntry = 0;
+        std::memcpy(&firstEntry, reinterpret_cast<const void*>(vtable), sizeof(firstEntry));
+        if (!space.readable(reinterpret_cast<const void*>(firstEntry), 4)) continue;
+        return candidate;
+    }
+    return nullptr;
 }
 
 void World::installBlockLookup() {

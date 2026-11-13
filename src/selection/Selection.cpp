@@ -42,45 +42,87 @@ bool Selection::active() const {
     return static_cast<bool>(mTarget);
 }
 
-bool Selection::toggleBlock(const std::string& blockId, const std::string& prettyName) {
-    if (blockId.empty()) return false;
-    {
-        std::lock_guard lock(mMutex);
-        if (mTarget.kind == Kind::Block && mTarget.id == blockId) {
-            mTarget.clear();
-            mMatchedClasses.clear();
-            ++mRevision;
-            info("selection: cleared (toggled " + blockId + ")");
-            return false;
-        }
+bool Selection::selectBlock(const std::string& rawIdentifier) {
+    auto& index = identifier::ClassIndex::get();
+    index.loadDocumentedTable();
+
+    auto entry = identifier::resolve(identifier::Domain::Block, rawIdentifier);
+    if (!entry) {
+        // Never replace a working selection with a typo.
+        info("selection: rejected block identifier \"" + rawIdentifier + "\": " + entry.evidence);
+        return false;
     }
+
     Target next;
     next.kind = Kind::Block;
-    next.id = blockId;
-    next.prettyName = prettyName.empty() ? blockId : prettyName;
+    next.id = entry.id;
+    next.prettyName = entry.id;
+    next.confidence = entry.confidence;
     set(std::move(next));
     return true;
 }
 
-bool Selection::toggleEntity(const std::string& className, const std::string& prettyName) {
-    if (className.empty()) return false;
-    {
-        std::lock_guard lock(mMutex);
-        if (mTarget.kind == Kind::Entity && mTarget.id == className) {
-            mTarget.clear();
-            mMatchedClasses.clear();
-            ++mRevision;
-            info("selection: cleared (toggled " + className + ")");
-            return false;
-        }
+bool Selection::selectEntity(const std::string& rawIdentifier) {
+    auto& index = identifier::ClassIndex::get();
+    index.loadDocumentedTable();
+
+    auto entry = identifier::resolve(identifier::Domain::Entity, rawIdentifier);
+    if (!entry) {
+        info("selection: rejected entity identifier \"" + rawIdentifier + "\": " + entry.evidence);
+        return false;
     }
+
     Target next;
     next.kind = Kind::Entity;
-    next.id = className;
-    next.prettyName = prettyName.empty() ? className : prettyName;
-    next.matchBySubstring = false;
+    next.id = entry.id;
+    next.prettyName = entry.id;
+    next.confidence = entry.confidence;
+    next.classes = entry.classes;
+    // An unmapped identifier is still selectable: the scanner will find nothing
+    // and the diagnostics report will say "no class mapping", which is a much
+    // better answer than silently refusing the input.
     set(std::move(next));
     return true;
+}
+
+bool Selection::selectEntityFromClass(const std::string& className) {
+    if (className.empty()) return false;
+
+    // A live class name is evidence: record it against itself so the index keeps
+    // whatever the player picked and the diagnostics dump can show it.
+    auto& index = identifier::ClassIndex::get();
+    index.loadDocumentedTable();
+
+    Target next;
+    next.kind = Kind::Entity;
+    // The identifier is the class name as observed; it is not a namespaced id and
+    // is not presented as one.
+    next.id = className;
+    next.prettyName = className;
+    next.confidence = identifier::Confidence::ObservedLive;
+    next.classes = {className};
+    set(std::move(next));
+    return true;
+}
+
+bool Selection::toggleBlock(const std::string& blockId, const std::string&) {
+    const auto canonical = identifier::normalise(blockId, identifier::Domain::Block);
+    if (canonical.empty()) return false;
+    if (current().kind == Kind::Block && current().id == canonical) {
+        clear();
+        return false;
+    }
+    return selectBlock(canonical);
+}
+
+bool Selection::toggleEntity(const std::string& entityId, const std::string&) {
+    const auto canonical = identifier::normalise(entityId, identifier::Domain::Entity);
+    if (canonical.empty()) return false;
+    if (current().kind == Kind::Entity && current().id == canonical) {
+        clear();
+        return false;
+    }
+    return selectEntity(canonical);
 }
 
 void Selection::setMatchedClasses(std::vector<std::string> classes) {
@@ -101,10 +143,24 @@ std::uint64_t Selection::revision() const {
 }
 
 bool entityMatches(const Target& target, const std::string& className) {
-    if (target.kind != Kind::Entity || target.id.empty() || className.empty()) return false;
-    if (target.id == className) return true;
-    if (!target.matchBySubstring) return false;
-    return className.find(target.id) != std::string::npos;
+    if (target.kind != Kind::Entity || className.empty()) return false;
+    if (target.classes.empty() && target.id.empty()) return false;
+
+    // 1:Many: any class bound to the identifier matches. Exact comparison keeps
+    // `Zombie` from also matching an unrelated `ZombieHorse`-style subclass
+    // unless the caller opted into substring matching.
+    for (const auto& mapped : target.classes) {
+        if (mapped == className) return true;
+    }
+    // Backwards compatibility for a target built from a bare class name (the
+    // picker path sets both `id` and `classes`, but a saved config may not).
+    if (!target.matchBySubstring) {
+        return target.classes.empty() && target.id == className;
+    }
+    for (const auto& mapped : target.classes) {
+        if (className.find(mapped) != std::string::npos) return true;
+    }
+    return target.classes.empty() && className.find(target.id) != std::string::npos;
 }
 
 } // namespace bes::selection

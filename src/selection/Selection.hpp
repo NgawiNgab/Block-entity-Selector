@@ -1,5 +1,7 @@
 #pragma once
 
+#include "selection/Identifier.hpp"
+
 #include <bes/sdk/Types.hpp>
 
 #include <cstdint>
@@ -20,10 +22,21 @@ enum class Kind : std::uint8_t {
 /// render thread never touches pointers owned by the tick thread.
 struct Target {
     Kind kind = Kind::None;
-    std::string id;          ///< block id ("minecraft:diamond_ore") or entity class name ("Zombie")
+    /// Canonical identifier the user chose: "minecraft:diamond_ore" or
+    /// "minecraft:zombie". Always normalised before it lands here.
+    std::string id;
     std::string prettyName;  ///< what the module menu / toast shows
     int dimensionId = 0;
-    bool matchBySubstring = false; ///< entity selection covers subclasses/derived names
+    /// How much is actually known about this identifier. The UI reports it, and
+    /// the scanner never claims more than it does.
+    identifier::Confidence confidence = identifier::Confidence::Unverified;
+    /// Entity only: every RTTI class this identifier expands to (1:Many). Filled
+    /// from the identifier index, never from a guess. Empty means "no class
+    /// mapping yet", which is a legitimate, reportable state.
+    std::vector<std::string> classes;
+    /// Entity only: also match subclasses whose class name contains one of
+    /// `classes`. Off by default so a mapping is exact unless asked otherwise.
+    bool matchBySubstring = false;
 
     explicit operator bool() const noexcept { return kind != Kind::None && !id.empty(); }
 
@@ -31,6 +44,8 @@ struct Target {
         kind = Kind::None;
         id.clear();
         prettyName.clear();
+        confidence = identifier::Confidence::Unverified;
+        classes.clear();
         matchBySubstring = false;
     }
 };
@@ -57,12 +72,23 @@ public:
 
     bool active() const;
 
-    /// Toggles a block: selecting the same block again clears the selection.
-    bool toggleBlock(const std::string& blockId, const std::string& prettyName);
+    /// Selects a block by identifier. The identifier is normalised first; an
+    /// invalid one is rejected and the previous selection is left alone.
+    bool selectBlock(const std::string& rawIdentifier);
 
-    /// Toggles an entity class. `classes` lists every live class name that was
-    /// merged into this selection so toggling is symmetric with the picker.
-    bool toggleEntity(const std::string& className, const std::string& prettyName);
+    /// Selects an entity by identifier, expanding it through the class index.
+    /// Returns false (and changes nothing) when the identifier is invalid.
+    bool selectEntity(const std::string& rawIdentifier);
+
+    /// Convenience for the on-screen picker: selects an entity by an RTTI class
+    /// name observed on a live actor. This is *evidence*, so the identifier is
+    /// recorded as ObservedLive rather than as a documented mapping.
+    bool selectEntityFromClass(const std::string& className);
+
+    /// Clears the selection when `id` is already selected, otherwise selects it.
+    /// Used by both the picker and the menu's own select buttons.
+    bool toggleBlock(const std::string& blockId, const std::string& prettyName = {});
+    bool toggleEntity(const std::string& entityId, const std::string& prettyName = {});
 
     /// Cached entity selection helpers, refreshed by the tick loop.
     void setMatchedClasses(std::vector<std::string> classes);

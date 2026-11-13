@@ -2,6 +2,7 @@
 
 #include "core/Logging.hpp"
 #include "core/Resolver.hpp"
+#include "selection/Identifier.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -126,6 +127,15 @@ void Scanner::scanEntities(const world::Snapshot& snapshot, const Target& target
         boxes.push_back(actor.bounds);
         playerFlags.push_back(actor.isPlayer ? 1 : 0);
 
+        // A class that matched and has a valid hitbox is proven to exist in this
+        // build. Bind it so `minecraft:zombie` keeps working across sessions even
+        // if the documented table is later trimmed.
+        if (target.kind == Kind::Entity && target.confidence < identifier::Confidence::ObservedLive) {
+            identifier::ClassIndex::get().bind(identifier::Domain::Entity, target.id, actor.className,
+                                               identifier::Confidence::ObservedLive,
+                                               "observed as a live actor");
+        }
+
         if (std::find(classes.begin(), classes.end(), actor.className) == classes.end()) {
             classes.push_back(actor.className);
         }
@@ -182,6 +192,14 @@ std::size_t Scanner::scanBlocks(const world::Snapshot& snapshot, const Target& t
         ++lookups;
 
         if (!name.empty() && name == target.id) {
+            // Seeing the identifier on a real block is evidence, and it is the
+            // only evidence the mod can produce on its own. Recorded once per
+            // session so the confidence label can move off "unverified".
+            // Re-asserted on every hit (the index ignores non-upgrades), so this
+            // cannot latch on the wrong identifier if the player re-selects.
+            identifier::ClassIndex::get().note(identifier::Domain::Block, target.id,
+                                               identifier::Confidence::ObservedLive,
+                                               "observed on a live block in this session");
             const float dx = static_cast<float>(pos.x) + 0.5f - snapshot.playerPosition.x;
             const float dy = static_cast<float>(pos.y) + 0.5f - snapshot.playerPosition.y;
             const float dz = static_cast<float>(pos.z) + 0.5f - snapshot.playerPosition.z;

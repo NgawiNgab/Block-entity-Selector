@@ -53,6 +53,10 @@ public:
     float scanRadius = 40.f;
     bool autoPickNearestOnEmpty = false;
     int keybind = 0;
+    /// Last text typed into the identifier fields. Kept here because the launcher
+    /// reports text edits and button presses as separate config events.
+    std::string mPendingBlockId;
+    std::string mPendingEntityId;
 
 private:
     SelectorModule() = default;

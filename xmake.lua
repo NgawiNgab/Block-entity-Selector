@@ -76,7 +76,8 @@ target("tests")
     set_languages("c++20")
     set_default(false)
     add_files("tests/*.cpp", "src/core/Profile.cpp", "src/core/Rtti.cpp", "src/core/Logging.cpp",
-              "src/selection/Selection.cpp", "src/selection/ScannerState.cpp")
+              "src/selection/Selection.cpp", "src/selection/Identifier.cpp",
+              "src/selection/ScannerState.cpp")
     add_includedirs("include", "src")
     -- Host builds have no preloader SDK, so fmt and the logger come from stubs
     -- in tests/stubs. Point BES_TEST_STUBS at another SDK checkout to use the real

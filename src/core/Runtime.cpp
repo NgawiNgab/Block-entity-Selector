@@ -1,5 +1,7 @@
 #include "core/Runtime.hpp"
 
+#include "diag/BlockTypeProbe.hpp"
+
 #include "core/ConfigStore.hpp"
 #include "core/GameHooks.hpp"
 #include "core/Logging.hpp"
@@ -8,6 +10,7 @@
 #include "launcher/Picker.hpp"
 #include "modules/SelectorModule.hpp"
 #include "render/HighlightRenderer.hpp"
+#include "selection/Identifier.hpp"
 #include "selection/Scanner.hpp"
 #include "selection/Selection.hpp"
 #include "world/World.hpp"
@@ -122,13 +125,17 @@ bool Runtime::enable(pl::mod::ModContext&) {
         }
         if (document.contains("selection") && document["selection"].is_object()) {
             const auto& saved = document["selection"];
-            selection::Target target;
             const auto kind = saved.value("kind", std::string{});
-            if (kind == "block") target.kind = selection::Kind::Block;
-            else if (kind == "entity") target.kind = selection::Kind::Entity;
-            target.id = saved.value("id", std::string{});
-            target.prettyName = saved.value("name", target.id);
-            if (target) selection::Selection::get().set(std::move(target));
+            const auto id = saved.value("id", std::string{});
+            // Re-resolve through the identifier layer instead of restoring the
+            // saved Target verbatim: the class expansion may have grown since the
+            // file was written, and the confidence label must be re-derived rather
+            // than trusted from disk.
+            if (kind == "block") {
+                selection::Selection::get().selectBlock(id);
+            } else if (kind == "entity") {
+                selection::Selection::get().selectEntity(id);
+            }
         }
     });
 
@@ -163,6 +170,8 @@ void Runtime::persistConfig() {
         document["selection"]["kind"] = target.kind == selection::Kind::Block ? "block" : "entity";
         document["selection"]["id"] = target.id;
         document["selection"]["name"] = target.prettyName;
+        // Recorded for support, not read back as authority.
+        document["selection"]["confidence"] = identifier::confidenceName(target.confidence);
     }
 
     document["profile"] = Profile::get().gameVersion();
@@ -267,6 +276,14 @@ std::string Runtime::dumpDiagnostics() {
            << " entityRange=" << settings.entityRange << '\n';
     report << "matches: " << targets.blocks.size() << " block(s), " << targets.entityBoxes.size()
            << " entity box(es)\n";
+
+    report << "blocktype probe runs: " << diag::BlockTypeProbe::get().dumpCount();
+    if (!diag::BlockTypeProbe::get().lastReportPath().empty()) {
+        report << "  last: " << diag::BlockTypeProbe::get().lastReportPath();
+    }
+    report << '\n';
+
+    report << '\n' << identifier::ClassIndex::get().describe();
 
     const auto matched = selection::Selection::get().matchedClasses();
     if (!matched.empty()) {

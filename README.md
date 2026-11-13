@@ -14,6 +14,9 @@ Pick a block (say `minecraft:diamond_ore`) or an entity (`Zombie`, `Player`, `It
 draws a coloured outline box around **every loaded instance** of it — through terrain, in real time,
 only on your client. Nothing is sent to the server, nothing is modified in the world.
 
+- Type or paste a **Block Identifier** (`minecraft:diamond_ore`) or **Entity
+  Identifier** (`minecraft:zombie`) in the module menu. Bare names work too —
+  `diamond_ore` becomes `minecraft:diamond_ore`.
 - Tap **SEL** (the on-screen button) to cycle the selection:
   entity under the crosshair → block under your feet → cleared.
 - The keybind clears an active selection; with nothing selected it toggles highlighting on or off.
@@ -22,6 +25,23 @@ only on your client. Nothing is sent to the server, nothing is modified in the w
 - Entity scans reuse the game's actor list, so they are always complete and always current.
 - Blocks, mobs and players each get their own colour; players can be excluded entirely, and the
   translucent fill is off by default (outline only).
+- One identifier can cover several internal classes (`minecraft:villager` →
+  `Villager`, `VillagerV2`), and the menu shows which ones it expanded to.
+
+### Identifier confidence
+
+A typed identifier is a *claim*, so the mod labels what it actually knows:
+
+| Label | Meaning |
+|---|---|
+| `documented` | Listed in the bundled table. Not proof it exists in your build. |
+| `observed-live` | The mod saw it in your world: a block read back this id, or a mapped class was present. |
+| `unverified` | Well-formed, but nothing has confirmed it. Still selectable — the mod will look. |
+| `invalid` | Not a legal identifier; rejected, and the previous selection is kept. |
+
+`registry-confirmed` is defined but not implemented yet — see
+[docs/UPDATING.md](docs/UPDATING.md) §8. The mod will not claim an identifier is
+real until the game itself says so.
 
 ## How it works
 
