@@ -106,7 +106,23 @@ bool Runtime::prepareGame() {
 
 bool Runtime::enable(pl::mod::ModContext&) {
     mEnabled = true;
-    if (!runningInsideMinecraft()) return true;
+
+    // Menu registration and the on-screen button are launcher services: they
+    // talk to the Mod Menu bridge and nothing else, and touch no game state.
+    // They therefore run before the game-process check below. Registration used
+    // to sit after that check, which meant any process whose argv[0] did not
+    // match the two expected strings silently registered nothing at all.
+    modules::SelectorModule::get().registerInMenu(mModId);
+    launcher::Picker::get().install(mModId);
+
+    if (!runningInsideMinecraft()) {
+        // Everything past this point needs libminecraftpe.so: signature
+        // resolution, the update hook, the frame tick and the renderer. Say so
+        // out loud, because an unregistered module now has exactly one remaining
+        // explanation and it should not have to be guessed.
+        log::warn("enable: not the Minecraft process; menu registered, game hooks deferred");
+        return true;
+    }
 
     if (!mInstalled) {
         if (void* game = dlopen("libminecraftpe.so", RTLD_NOW | RTLD_NOLOAD)) {
@@ -115,8 +131,6 @@ bool Runtime::enable(pl::mod::ModContext&) {
         }
     }
 
-    modules::SelectorModule::get().registerInMenu(mModId);
-    launcher::Picker::get().install(mModId);
     installFrameTick();
 
     ConfigStore::get().load([this](const nlohmann::json& document) {
