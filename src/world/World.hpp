@@ -60,6 +60,18 @@ public:
     /// Exact block-name lookup for a filtered set of positions.
     std::string blockName(void* blockSource, const bes::sdk::BlockPos& pos);
 
+    /// Raw `Block*` at a position, or null when the lookup is unresolved.
+    /// Exposed for diagnostics: the probe needs the object, not its name.
+    void* blockAt(void* blockSource, const bes::sdk::BlockPos& pos);
+
+    /// `BlockType*` for a live `Block*`.
+    ///
+    /// UNKNOWN offset: static RE could not pin which member of `Block` holds the
+    /// `BlockType` pointer. Rather than assert a guess, this probes the candidate
+    /// offsets the name path already trusts and returns the first one whose
+    /// target has a readable vtable. Returns null when none qualifies.
+    void* blockTypeOf(const void* block);
+
     /// Confirms offsets that need a live object (called lazily, once).
     void probeOffsets(void* localPlayer);
 

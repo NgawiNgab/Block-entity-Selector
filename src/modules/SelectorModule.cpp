@@ -1,5 +1,7 @@
 #include "modules/SelectorModule.hpp"
 
+#include "diag/BlockTypeProbe.hpp"
+
 #include "core/Logging.hpp"
 #include "core/Resolver.hpp"
 #include "core/Runtime.hpp"
@@ -149,6 +151,7 @@ bool SelectorModule::registerInMenu(const std::string& modId) {
     builder.config("clearSelection", "Clear Selection", pl::modmenu::ConfigType::Button, "false");
     builder.config("rescan", "Rescan Now", pl::modmenu::ConfigType::Button, "false");
     builder.config("diagnostics", "Diagnostics Dump", pl::modmenu::ConfigType::Button, "false");
+    builder.config("probeBlockType", "Probe BlockType", pl::modmenu::ConfigType::Button, "false");
 
     if (!builder.registerModule()) {
         core::log::error("menu: registration rejected by the launcher");
@@ -247,6 +250,8 @@ bool SelectorModule::registerInMenu(const std::string& modId) {
                      pl::modmenu::ConfigControlTypeV2::Button));
     schema.node(node("rescan", "rescan", "scan", "Rescan Now", pl::modmenu::ConfigControlTypeV2::Button));
     schema.node(node("diagnostics", "diagnostics", "debug", "Dump Diagnostics",
+                     pl::modmenu::ConfigControlTypeV2::Button));
+    schema.node(node("probeBlockType", "probeBlockType", "debug", "Probe BlockType",
                      pl::modmenu::ConfigControlTypeV2::Button));
 
     if (!pl::modmenu::setConfigSchemaJson(mModuleId, schema.toJson())) {
@@ -381,6 +386,9 @@ void SelectorModule::onConfigChanged(std::string_view key, std::string_view valu
         return;
     } else if (key == "diagnostics") {
         core::Runtime::get().dumpDiagnostics();
+        return;
+    } else if (key == "probeBlockType") {
+        diag::BlockTypeProbe::get().dumpNearPlayer();
         return;
     } else {
         return;

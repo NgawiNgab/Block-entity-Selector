@@ -5,9 +5,11 @@
 #include "selection/Scanner.hpp"
 #include "selection/Selection.hpp"
 
+#include <bes/sdk/LibcxxString.hpp>
 #include <bes/sdk/Types.hpp>
 
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -468,6 +470,63 @@ void testBlockCursor() {
     CHECK(!cursor.active());
 }
 
+void testLibcxxStringDecoding() {
+    // Small-string form: byte 0 is (size << 1) and the bytes live inline at +1.
+    // This is the shape the SSO sites in the RE log use.
+    {
+        alignas(8) unsigned char buffer[24]{};
+        const std::string source = "minecraft:stone";
+        const auto size = source.size();
+        buffer[0] = static_cast<unsigned char>(size << 1);
+        std::memcpy(buffer + 1, source.data(), size);
+        CHECK(bes::sdk::readLibcxxString(buffer) == source);
+    }
+
+    // Long form: byte 0 has the low bit set and {size, data} sits at +8.
+    {
+        alignas(8) unsigned char buffer[24]{};
+        const std::string source = "minecraft:deepslate_diamond_ore";
+        const auto data = reinterpret_cast<std::uint64_t>(source.data());
+        const auto size = static_cast<std::uint64_t>(source.size());
+        buffer[0] = 0x1;
+        std::memcpy(buffer + 8, &size, sizeof(size));
+        std::memcpy(buffer + 16, &data, sizeof(data));
+        CHECK(bes::sdk::readLibcxxString(buffer) == source);
+    }
+
+    // A size that exceeds the caller's limit is rejected rather than trusted.
+    {
+        alignas(8) unsigned char buffer[24]{};
+        buffer[0] = static_cast<unsigned char>(30 << 1);
+        CHECK(bes::sdk::readLibcxxString(buffer, 8).empty());
+    }
+
+    // A short-form size above the 22-byte inline capacity is impossible, so it
+    // must not be read as a string.
+    {
+        alignas(8) unsigned char buffer[24]{};
+        buffer[0] = static_cast<unsigned char>(23 << 1);
+        CHECK(bes::sdk::readLibcxxString(buffer).empty());
+    }
+
+    // Long form with a data pointer the predicate rejects must not be dereferenced.
+    {
+        alignas(8) unsigned char buffer[24]{};
+        const std::uint64_t size = 8;
+        const std::uint64_t data = 0x10;  // below any valid mapping
+        buffer[0] = 0x1;
+        std::memcpy(buffer + 8, &size, sizeof(size));
+        std::memcpy(buffer + 16, &data, sizeof(data));
+        CHECK(bes::sdk::readLibcxxString(buffer).empty());
+    }
+
+    // A zeroed word reports size 0, which is not a usable string.
+    {
+        alignas(8) unsigned char buffer[24]{};
+        CHECK(bes::sdk::readLibcxxString(buffer).empty());
+    }
+}
+
 } // namespace
 
 int main() {
@@ -482,6 +541,7 @@ int main() {
     testSelectionMatching();
     testIdentifierSyntax();
     testIdentifierIndex();
+    testLibcxxStringDecoding();
 
     std::printf("%d checks, %d failure(s)\n", gChecks, gFailures);
     return gFailures == 0 ? 0 : 1;

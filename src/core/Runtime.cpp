@@ -1,5 +1,7 @@
 #include "core/Runtime.hpp"
 
+#include "diag/BlockTypeProbe.hpp"
+
 #include "core/ConfigStore.hpp"
 #include "core/GameHooks.hpp"
 #include "core/Logging.hpp"
@@ -274,6 +276,12 @@ std::string Runtime::dumpDiagnostics() {
            << " entityRange=" << settings.entityRange << '\n';
     report << "matches: " << targets.blocks.size() << " block(s), " << targets.entityBoxes.size()
            << " entity box(es)\n";
+
+    report << "blocktype probe runs: " << diag::BlockTypeProbe::get().dumpCount();
+    if (!diag::BlockTypeProbe::get().lastReportPath().empty()) {
+        report << "  last: " << diag::BlockTypeProbe::get().lastReportPath();
+    }
+    report << '\n';
 
     report << '\n' << identifier::ClassIndex::get().describe();
 
