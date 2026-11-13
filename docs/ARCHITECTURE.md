@@ -111,6 +111,16 @@ draws (lines, then triangles when the translucent fill is enabled).
 pass only, restoring the previous state afterwards (`GlState.cpp`). Depth-tested mode still works
 for anyone who prefers the vanilla look.
 
+**Menu registration is not gated on the game process.** `Runtime::enable` registers the Mod Menu
+module and the on-screen button *before* it checks whether the current process is the Minecraft
+child. Both are launcher services -- `pl::modmenu::ModuleBuilder` and `ButtonBuilder` -- and touch no
+game state, so they cannot fail for want of `libminecraftpe.so`. Registration used to sit after the
+`runningInsideMinecraft()` check, which meant a process whose `argv[0]` matched neither
+`com.mojang.minecraftpe` nor `org.levimc.launcher:minecraft` registered *nothing* and said nothing.
+Everything that genuinely needs the game -- signature resolution, the update hook, the frame tick,
+the renderer -- stays behind the check, and the check now logs a warning instead of returning
+silently.
+
 ## Files worth knowing
 
 | File | Why |
