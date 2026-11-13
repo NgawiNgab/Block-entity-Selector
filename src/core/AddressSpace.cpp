@@ -16,6 +16,7 @@ AddressSpace& AddressSpace::get() {
 bool AddressSpace::refresh() {
     mCount = 0;
     mLoaded = false;
+    mTruncated = false;
 
     std::FILE* file = std::fopen("/proc/self/maps", "r");
     if (!file) return false;
@@ -54,6 +55,9 @@ bool AddressSpace::refresh() {
         mRegions[mCount].path = std::move(path);
         ++mCount;
     }
+    // Distinguish "the map ended" from "the buffer filled". The loop exits on the
+    // cap without consuming the next line, so a region can be read after it.
+    if (mCount >= kMaxRegions) mTruncated = true;
     std::fclose(file);
 
     mLoaded = mCount > 0;

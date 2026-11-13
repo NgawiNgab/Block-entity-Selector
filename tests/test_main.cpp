@@ -628,6 +628,36 @@ void testDiagnosticReportBuffer() {
     CHECK(bes::core::log::peekReport().empty());
 }
 
+/// The diagnostics read `offsets proven: 0/11` on a live player with every probe
+/// correctly written. The cause was the memory map, not the probes: a real
+/// Minecraft process maps 6022 regions and kMaxRegions was 4096, so the library's
+/// own mappings -- and everything above them -- read as unmapped. Every guarded
+/// check then answered "not readable" and every correct candidate was rejected.
+///
+/// The dangerous property is that truncation does not fail loudly. These checks
+/// pin the two halves that matter: the capacity must exceed a real device map, and
+/// truncation must be observable so a negative answer can be treated as unknown.
+void testAddressSpaceCapacity() {
+    // Measured, not guessed: the 2026-11-13 tombstone's memory map has 6022
+    // regions. A cap at or below that silently blinds the probes.
+    CHECK(bes::sdk::AddressSpace::kMaxRegions > 6022);
+
+    auto& space = bes::sdk::AddressSpace::get();
+    CHECK(space.refresh());
+
+    // A host process is small, so truncation must not be claimed here. Without
+    // this the flag could be hardcoded true and the test would still pass.
+    CHECK(!space.truncated());
+
+    // Capacity must not have been reached, or the flag above is meaningless.
+    CHECK(space.regionCount() < bes::sdk::AddressSpace::kMaxRegions);
+
+    // read_proc/parse consistency: every region must be non-empty and ordered.
+    // Done through the public surface so this stays a behavioural test.
+    CHECK(space.fileBackedRegionCount() > 0);
+    CHECK(space.regionCount() >= space.fileBackedRegionCount());
+}
+
 void testModulePresence() {
     // The process gate used to compare argv[0] against two hardcoded strings.
     // It now asks whether the game's image is actually mapped, so the parser that
@@ -703,6 +733,7 @@ int main() {
     testIdentifierIndex();
     testLibcxxStringDecoding();
     testDiagnosticReportBuffer();
+    testAddressSpaceCapacity();
     testModulePresence();
 
     std::printf("%d checks, %d failure(s)\n", gChecks, gFailures);

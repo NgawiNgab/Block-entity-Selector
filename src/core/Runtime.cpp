@@ -332,6 +332,17 @@ std::string Runtime::dumpDiagnostics() {
     // the difference between "the mod is idle because nothing matched" and "the
     // mod is idle because nothing has been proven on this build yet".
     report << "   offsets proven:   " << provenOffsets() << '/' << OffCount << '\n';
+    // A truncated memory map makes every guarded read answer "unmapped", which is
+    // indistinguishable from a wrong offset unless it is stated. Say it out loud.
+    {
+        auto& space = sdk::AddressSpace::get();
+        if (space.regionCount() == 0) space.refresh();
+        report << "   memory map:       " << space.regionCount() << " region(s)";
+        if (space.truncated()) {
+            report << "  TRUNCATED -- probe results below are unreliable";
+        }
+        report << '\n';
+    }
     report << "3. game hooks:       " << (mInstalled ? "installed" : "NOT installed") << '\n';
     report << "   frame tick:       " << (mFrameTickInstalled ? "installed" : "NOT installed") << '\n';
     report << "   local player:     " << (mLastPlayer ? "yes" : "NOT yet seen") << '\n';

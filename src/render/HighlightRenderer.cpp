@@ -5,6 +5,7 @@
 #include "selection/Scanner.hpp"
 #include "render/GlState.hpp"
 
+#include <bes/sdk/AddressSpace.hpp>
 #include <bes/sdk/Memory.hpp>
 #include <pl/memory/Hook.hpp>
 
@@ -134,10 +135,17 @@ class ScopedShaderColor {
 public:
     explicit ScopedShaderColor(void* screenContext) {
         if (!screenContext) return;
-        const auto offset = Resolver::get().offset(OffId::ScreenContextColorHolder);
+        // Unproven reads as 0 here too. Unlike the tessellator this one only
+        // memcpy()s floats in and out, so a wrong offset corrupts an unrelated
+        // field instead of faulting -- quieter, not safer. Require the proof.
+        auto& resolver = Resolver::get();
+        if (!resolver.offsetValidated(OffId::ScreenContextColorHolder)) return;
+        const auto offset = resolver.offset(OffId::ScreenContextColorHolder);
         if (!offset) return;
+        if (!sdk::AddressSpace::get().readable(screenContext, offset + sizeof(mSaved))) return;
         mHolder = sdk::fieldPointer(screenContext, offset);
-        if (!sdk::plausiblePointer(mHolder)) {
+        if (!sdk::plausiblePointer(mHolder) ||
+            !sdk::AddressSpace::get().readable(mHolder, sizeof(mSaved))) {
             mHolder = nullptr;
             return;
         }
