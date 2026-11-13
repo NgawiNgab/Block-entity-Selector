@@ -1,11 +1,13 @@
 #include "core/Logging.hpp"
 #include "core/Profile.hpp"
+#include "core/Resolver.hpp"
 #include "core/Rtti.hpp"
 #include "selection/BlockCursor.hpp"
 #include "selection/Identifier.hpp"
 #include "selection/Scanner.hpp"
 #include "selection/Selection.hpp"
 
+#include <bes/sdk/AddressSpace.hpp>
 #include <bes/sdk/LibcxxString.hpp>
 #include <bes/sdk/Types.hpp>
 
@@ -202,6 +204,81 @@ void testOffsetsAreSane() {
         CHECK(candidate.value % 8 == 0);
         CHECK(candidate.value < 0x1000);
     }
+}
+
+/// The crash on 2026-11-13 came from `Resolver::offset()` handing out a profile
+/// candidate that no live object had ever confirmed: a 0x9 pointer reached game
+/// code and the game faulted on `ldr s0, [x1]`. These checks pin the fix.
+///
+/// They are written as positive *and* negative assertions on purpose. Asserting
+/// only "unproven reads as 0" would still pass if `confirmOffset` did nothing at
+/// all, so the promotion path is checked in the same test.
+void testOffsetsRequireProof() {
+    using bes::core::OffId;
+    using bes::core::Resolver;
+
+    // Load a profile this test owns. `Profile` is a process-wide singleton and
+    // earlier tests already replaced its offsets, so inheriting that state would
+    // make these assertions depend on test order.
+    auto& profile = bes::core::Profile::get();
+    CHECK(profile.loadFromText(R"({
+        "offsets": {
+            "actor_level":      { "candidates": [ { "offset": "0x1F0" } ] },
+            "actor_dimension":  { "candidates": [ { "offset": "0x1E0" } ] },
+            "actor_state_vector": { "candidates": [ { "offset": "0x228" } ] }
+        }
+    })",
+                              "offsets", false));
+
+    auto& resolver = Resolver::get();
+    resolver.resolveAll("libthisdoesnotexist.so");
+
+    // 1. A category with a profile candidate must still read as unusable until
+    //    something proves it. This is the exact bug: 0x1F0 was live immediately.
+    CHECK(!resolver.offsetValidated(OffId::ActorLevel));
+    CHECK(resolver.offset(OffId::ActorLevel) == 0);
+    CHECK(resolver.offsetCandidate(OffId::ActorLevel) == 0x1F0);
+
+    CHECK(!resolver.offsetValidated(OffId::ActorDimension));
+    CHECK(resolver.offset(OffId::ActorDimension) == 0);
+    CHECK(resolver.offsetCandidate(OffId::ActorDimension) == 0x1E0);
+
+    // 2. A category the profile says nothing about reads the same way, so a
+    //    caller cannot distinguish them by accident.
+    CHECK(resolver.offsetCandidate(OffId::ActorStateVector) == 0x228);
+    CHECK(resolver.offset(OffId::ActorStateVector) == 0);
+
+    // 3. Proving one category promotes that one only.
+    resolver.confirmOffset(OffId::ActorLevel, 0x2A8, "test");
+    CHECK(resolver.offsetValidated(OffId::ActorLevel));
+    CHECK(resolver.offset(OffId::ActorLevel) == 0x2A8);
+    CHECK(!resolver.offsetValidated(OffId::ActorDimension));
+    CHECK(resolver.offset(OffId::ActorDimension) == 0);
+
+    // 4. Proof is recorded against the proven value, not the profile's guess,
+    //    and it is idempotent.
+    CHECK(resolver.offsetCandidate(OffId::ActorLevel) == 0x1F0);
+    CHECK(resolver.offset(OffId::ActorLevel) == 0x2A8);
+    resolver.confirmOffset(OffId::ActorLevel, 0x2A8, "test again");
+    CHECK(resolver.offset(OffId::ActorLevel) == 0x2A8);
+
+    // 5. The summary states proof status rather than printing a bare hex value,
+    //    because "0x1F0" and "0x1F0, proven" are different claims.
+    const auto& summary = resolver.summary();
+    CHECK(summary.find("PROVEN") != std::string::npos);
+    CHECK(summary.find("unproven (not used)") != std::string::npos);
+    CHECK(summary.find("offsets proven:") != std::string::npos);
+
+    // 6. Every category the renderer or world layer could touch must start
+    //    unproven on a fresh resolve. If a future profile ever marks something
+    //    validated at load time, this catches it.
+    std::size_t provenAtStartup = 0;
+    for (std::size_t index = 0; index < bes::core::OffCount; ++index) {
+        const auto id = static_cast<OffId>(index);
+        if (id == OffId::ActorLevel) continue; // proven above, deliberately
+        if (resolver.offsetValidated(id)) ++provenAtStartup;
+    }
+    CHECK(provenAtStartup == 0);
 }
 
 void testScannerSettings() {
@@ -551,6 +628,64 @@ void testDiagnosticReportBuffer() {
     CHECK(bes::core::log::peekReport().empty());
 }
 
+void testModulePresence() {
+    // The process gate used to compare argv[0] against two hardcoded strings.
+    // It now asks whether the game's image is actually mapped, so the parser that
+    // answers that question has to be correct -- including on lines whose path
+    // column contains spaces, which a naive sscanf("%s") would truncate.
+    auto& space = bes::sdk::AddressSpace::get();
+    CHECK(space.refresh());
+    CHECK(space.regionCount() > 0);
+
+    // Positive control first. Without this, breaking the path parser would make
+    // every query below answer "not loaded" and the test would still pass -- it
+    // only asserts absence, and absence is what a broken parser produces.
+    CHECK(space.fileBackedRegionCount() > 0);
+
+    // A process always has something mapped, and it never has a Minecraft image.
+    // The second half is the assertion that matters: absence must report absence.
+    CHECK(space.modulePath("libminecraftpe.so").empty());
+    CHECK(!space.moduleLoaded("libminecraftpe.so"));
+
+    // A nonsense soname must not match anything either.
+    CHECK(!space.moduleLoaded("this_is_not_a_real_library_9f3a.so"));
+
+    // An empty name must never match a region.
+    CHECK(!space.moduleLoaded(""));
+
+    // readable() must stay consistent with the same parsed table.
+    int local = 0;
+    CHECK(space.readable(&local, sizeof(local)));
+    CHECK(!space.readable(static_cast<void*>(nullptr), 1));
+    CHECK(!space.readable(reinterpret_cast<void*>(0x10), 1));
+
+    // The matching rule itself, exercised directly. This is the part a host test
+    // cannot reach through the public query, because there is no Minecraft image
+    // to find -- so it is tested as a predicate.
+    CHECK(bes::sdk::matchesLibraryPath("/data/app/libminecraftpe.so", "libminecraftpe.so"));
+    CHECK(bes::sdk::matchesLibraryPath("/data/app/base.apk!/lib/arm64-v8a/libminecraftpe.so",
+                                       "libminecraftpe.so"));
+    // The loader's marker for a replaced file must not defeat the match.
+    CHECK(bes::sdk::matchesLibraryPath("/data/app/libminecraftpe.so (deleted)", "libminecraftpe.so"));
+    // Whole-component matching: a longer name that merely ends with the soname
+    // must not match, or every diagnostic would report a false positive.
+    // This one ends with the exact soname but the character before it is 'e', not
+    // '/', so it must not match. A plain suffix compare accepts it -- and that
+    // false positive would make the mod believe the game was present.
+    CHECK(!bes::sdk::matchesLibraryPath("/data/app/fakelibminecraftpe.so", "libminecraftpe.so"));
+    // Same trap on the (deleted) form.
+    CHECK(!bes::sdk::matchesLibraryPath("/data/app/fakelibminecraftpe.so (deleted)",
+                                        "libminecraftpe.so"));
+    // And a longer name that does not end with the soname at all.
+    CHECK(!bes::sdk::matchesLibraryPath("/data/app/libfakeminecraftpe.so", "libminecraftpe.so"));
+    CHECK(!bes::sdk::matchesLibraryPath("", "libminecraftpe.so"));
+    CHECK(!bes::sdk::matchesLibraryPath("/data/app/libminecraftpe.so", ""));
+    // A path shorter than the soname must not read out of bounds.
+    CHECK(!bes::sdk::matchesLibraryPath("/a.so", "libminecraftpe.so"));
+    // Exact-name and no-directory cases.
+    CHECK(bes::sdk::matchesLibraryPath("libminecraftpe.so", "libminecraftpe.so"));
+}
+
 } // namespace
 
 int main() {
@@ -560,6 +695,7 @@ int main() {
     testProfileParsing();
     testVtableCandidates();
     testOffsetsAreSane();
+    testOffsetsRequireProof();
     testScannerSettings();
     testBlockCursor();
     testSelectionMatching();
@@ -567,6 +703,7 @@ int main() {
     testIdentifierIndex();
     testLibcxxStringDecoding();
     testDiagnosticReportBuffer();
+    testModulePresence();
 
     std::printf("%d checks, %d failure(s)\n", gChecks, gFailures);
     return gFailures == 0 ? 0 : 1;

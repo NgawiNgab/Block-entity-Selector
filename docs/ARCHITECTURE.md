@@ -28,14 +28,38 @@ A short tour of how a selection turns into pixels, and which piece owns which co
 
 | Thread | Runs | Notes |
 |---|---|---|
-| Game render thread | `renderLevel` detour, `HighlightRenderer::draw` | Reads `Scanner::targets()` under a short mutex; never calls into game code that can block. |
-| Game tick thread | `ClientInstance::update` detour → `World::update` + `Scanner::update` | All game-pointer dereferencing happens here. |
-| Game frame thread | `eglSwapBuffers` detour → `Runtime::onFrame` | Keeps the scan advancing while paused. |
+| Game render thread | `renderLevel` detour, `HighlightRenderer::draw` | Reads `Scanner::targets()` and `World::snapshot()` (both copies, both under a mutex); never calls into game code that can block. |
+| Game frame thread (`Rendering Pool`) | `eglSwapBuffers` detour → `Runtime::onFrame` → `World::update` + `Scanner::update` | **The single tick driver.** All game-pointer dereferencing happens here, on one thread. |
+| Game tick thread | `ClientInstance::update` detour → records the local player only | Deliberately does **not** tick the module: two drivers meant one thread could rewrite the snapshot while the other read it. See the 2026-11-13 tombstone. |
 | Launcher UI thread | Module menu callbacks (`onConfigChanged`, `onToggle`) | Only touches value types and calls `Scanner::setSettings`. |
 | Config worker | `ConfigStore` | Debounced JSON writes, atomic rename. |
 
 Rule of thumb: **pointers never cross threads as ownership**; `Selection` and `FrameTargets` carry
 value types (`BlockPos`, `AABB`, strings) so the render path cannot follow a freed actor.
+
+`World` follows the same rule: `snapshot()` returns a **copy** taken under `World::mMutex`, and
+`Snapshot` is `static_assert`ed trivially copyable so a future member cannot quietly reintroduce
+the aliasing. It used to hand out a reference to the live member, which two threads then raced on.
+
+## Offset proof
+
+`Resolver::offset()` **fails closed**. Every value in `resources/signatures.json` is a
+*candidate* — a hypothesis with no `origin` recorded — and it is not usable until a probe has
+confirmed it against a live object:
+
+```
+profile candidate  --confirmOffset()-->  proven value  --offset()-->  readable by callers
+```
+
+`offset()` returns `0` for anything unproven, and `offsetCandidate()` exists only for the
+diagnostics dump. This is not defensive style; it is the fix for the 2026-11-13 SIGSEGV, where an
+unproven `actor_level` was dereferenced on a live player and the resulting garbage pointer reached
+game code.
+
+**Callers must treat `0` as "unproven", never as "field at offset zero".** A pointer read at
+offset 0 returns the object's own vptr, which is a real mapped address and will pass any
+plausibility heuristic — the trap that made this bug hard to see. There is a test
+(`testOffsetsRequireProof`) pinning the fail-closed behaviour in both directions.
 
 ## Identifier layer
 

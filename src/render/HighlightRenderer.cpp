@@ -391,6 +391,10 @@ void HighlightRenderer::draw(void* levelRenderer, void* screenContext) {
 
     auto& resolver = Resolver::get();
 
+    // Unproven reads as 0, and offset 0 on the ScreenContext is its vptr -- a
+    // mapped pointer that would sail through plausiblePointer() and then be used
+    // as a Tessellator. Require the proof instead of the heuristic.
+    if (!resolver.offsetValidated(OffId::ScreenContextTessellator)) return;
     const auto tessellatorPointer = sdk::fieldPointer(screenContext, resolver.offset(OffId::ScreenContextTessellator));
     if (!sdk::plausiblePointer(tessellatorPointer)) return;
     void* tessellator = tessellatorPointer;

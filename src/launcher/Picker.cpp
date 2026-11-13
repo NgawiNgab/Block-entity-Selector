@@ -66,7 +66,7 @@ void Picker::uninstall() {
 
 std::string Picker::pickEntityAtCrosshair() {
     auto& world = world::World::get();
-    const auto& snapshot = world.snapshot();
+    const auto snapshot = world.snapshot();
     if (!snapshot.valid) return {};
 
     const auto origin = snapshot.cameraPosition;
@@ -94,7 +94,7 @@ std::string Picker::pickEntityAtCrosshair() {
 
 std::string Picker::pickBlockAtFeet() {
     auto& world = world::World::get();
-    const auto& snapshot = world.snapshot();
+    const auto snapshot = world.snapshot();
     if (!snapshot.valid) return {};
 
     // Start slightly below the camera so a block the player is standing in wins
@@ -150,11 +150,24 @@ void Picker::pickUnderCrosshair() {
     // report, so name the reason instead of exiting silently: without a live
     // snapshot there is no player, and without a player the picker cannot see the
     // world at all.
-    const auto& snapshot = world::World::get().snapshot();
+    const auto snapshot = world::World::get().snapshot();
     if (!snapshot.valid) {
-        core::log::warn("picker: no world snapshot yet -- the game hook is not ticking "
-                        "(check the diagnostics dump: 'game hooks' / 'local player')");
+        // Once per state change, not once per tap: the condition is either true
+        // for a run of taps or it is not, and repeating it buries the startup
+        // lines that explain why.
+        if (!mLoggedNoSnapshot) {
+            mLoggedNoSnapshot = true;
+            core::log::warn("picker: no world snapshot yet -- the game hook is not ticking "
+                            "(see the diagnostics dump: 'startup' section)");
+        }
         return;
+    }
+
+    // A working snapshot means the previous warning no longer applies, so the
+    // next failure starts a fresh run of logging.
+    if (mLoggedNoSnapshot) {
+        mLoggedNoSnapshot = false;
+        core::log::info("picker: world snapshot is now available");
     }
     core::log::info("picker: nothing under the crosshair or at the player's feet");
 }

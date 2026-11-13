@@ -76,6 +76,7 @@ target("tests")
     set_languages("c++20")
     set_default(false)
     add_files("tests/*.cpp", "src/core/Profile.cpp", "src/core/Rtti.cpp", "src/core/Logging.cpp",
+              "src/core/AddressSpace.cpp", "src/core/Resolver.cpp",
               "src/selection/Selection.cpp", "src/selection/Identifier.cpp",
               "src/selection/ScannerState.cpp")
     add_includedirs("include", "src")

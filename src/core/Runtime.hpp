@@ -2,6 +2,7 @@
 
 #include <pl/Mod.hpp>
 
+#include <cstddef>
 #include <filesystem>
 #include <string>
 
@@ -23,6 +24,9 @@ public:
 
     /// Per-frame work; called by the eglSwapBuffers detour.
     void onFrame();
+
+    /// How many offset categories a live object has proven this session.
+    static std::size_t provenOffsets();
 
     const std::filesystem::path& dataDirectory() const noexcept { return mDataDirectory; }
     const std::string& modId() const noexcept { return mModId; }

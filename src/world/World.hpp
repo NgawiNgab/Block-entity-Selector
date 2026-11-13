@@ -5,6 +5,8 @@
 #include <bes/sdk/Types.hpp>
 
 #include <cstdint>
+#include <mutex>
+#include <type_traits>
 #include <string>
 #include <vector>
 
@@ -42,6 +44,12 @@ struct Snapshot {
     bool valid = false;
 };
 
+// `snapshot()` hands out a copy, so a future edit that adds a reference or a
+// pointer-into-the-object member to this struct would silently reintroduce the
+// race it was introduced to fix. These are cheap and say so at compile time.
+static_assert(std::is_trivially_copyable_v<Snapshot>,
+              "Snapshot must stay trivially copyable: it is copied under a lock on the render thread");
+
 /// Reads the game through the resolved offsets. Every accessor probes candidate
 /// offsets on first use, so a wrong profile entry cannot corrupt the game or
 /// crash the render thread.
@@ -52,7 +60,13 @@ public:
     /// Refreshes the cached snapshot. Called once per local player tick.
     void update(void* localPlayer, const bes::sdk::Vec3& cameraPosition = {});
 
-    const Snapshot& snapshot() const noexcept { return mSnapshot; }
+    /// A copy of the current snapshot, taken under the world lock.
+    ///
+    /// This used to hand out a reference to the live member. The field tick runs
+    /// on the render thread and the game tick runs on the update thread, so a
+    /// reference let one thread read the struct while the other was rewriting it.
+    /// A copy costs one struct and cannot tear.
+    Snapshot snapshot() const;
 
     /// Enumerates every loaded actor through the actor manager list.
     std::vector<ActorEntry> actors();
@@ -74,6 +88,7 @@ public:
 
     /// Confirms offsets that need a live object (called lazily, once).
     void probeOffsets(void* localPlayer);
+    void probeActorLevelAndDimension(void* localPlayer);
 
     /// Raw block source pointer for the current dimension.
     void* currentBlockSource();
@@ -91,9 +106,14 @@ private:
 
     void* readCamerasAndLevel(void* levelRenderer);
 
+    /// Guards mSnapshot and the mProbed* flags: two threads drive update().
+    mutable std::mutex mMutex;
     Snapshot mSnapshot{};
     bool mProbedStateVector = false;
     bool mProbedAabb = false;
+    bool mProbedLevel = false;
+    bool mProbedDimension = false;
+    bool mProbedActorManager = false;
 };
 
 }
