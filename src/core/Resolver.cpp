@@ -85,7 +85,9 @@ bool Resolver::resolveAll(std::string_view libraryName) {
     for (std::size_t index = 0; index < OffCount; ++index) {
         const auto id = static_cast<OffId>(index);
         const auto& candidates = profile.candidates(id);
-        mOffsets[index] = candidates.empty() ? 0 : candidates.front().value;
+        // Recorded as the hypothesis it is. `offset()` will not serve it until a
+        // probe confirms it on a live object; `mOffValidated` stays false.
+        mOffCandidates[index] = candidates.empty() ? 0 : candidates.front().value;
         mOffOrigins[index] = candidates.empty() ? std::string{} : candidates.front().origin;
     }
 
@@ -137,7 +139,20 @@ std::uintptr_t Resolver::address(SigId id) const {
 
 std::size_t Resolver::offset(OffId id) const {
     const auto index = static_cast<std::size_t>(id);
-    return index < OffCount ? mOffsets[index] : 0;
+    if (index >= OffCount) return 0;
+    // Fail closed: an unproven offset is not a usable offset. Returning the
+    // profile's guess here is what let a wrong field offset reach game code.
+    return mOffValidated[index] ? mOffsets[index] : 0;
+}
+
+bool Resolver::offsetValidated(OffId id) const {
+    const auto index = static_cast<std::size_t>(id);
+    return index < OffCount && mOffValidated[index];
+}
+
+std::size_t Resolver::offsetCandidate(OffId id) const {
+    const auto index = static_cast<std::size_t>(id);
+    return index < OffCount ? mOffCandidates[index] : 0;
 }
 
 bool Resolver::hasOffsetCandidates(OffId id) const {
@@ -147,7 +162,7 @@ bool Resolver::hasOffsetCandidates(OffId id) const {
 void Resolver::confirmOffset(OffId id, std::size_t value, std::string_view evidence) {
     const auto index = static_cast<std::size_t>(id);
     if (index >= OffCount) return;
-    if (mOffsets[index] == value) return;
+    if (mOffValidated[index] && mOffsets[index] == value) return;
 
     std::ostringstream message;
     message << "resolver: offset " << offName(id) << " -> 0x" << std::hex << value << std::dec
@@ -155,6 +170,7 @@ void Resolver::confirmOffset(OffId id, std::size_t value, std::string_view evide
     log::info(message.str());
 
     mOffsets[index] = value;
+    mOffValidated[index] = true;
     mOffOrigins[index] = std::string(evidence);
     refreshSummary();
 }
@@ -167,12 +183,25 @@ void Resolver::refreshSummary() {
         if (!mOrigins[index].empty()) out << "  <- " << mOrigins[index];
         out << '\n';
     }
+    // Offsets are reported with their proof status, because "0x1F0" and "0x1F0,
+    // proven" are not the same claim and the difference is the whole bug.
+    std::size_t provenOffsets = 0;
     for (std::size_t index = 0; index < OffCount; ++index) {
         const auto id = static_cast<OffId>(index);
-        out << "  off " << offName(id) << " = 0x" << std::hex << mOffsets[index] << std::dec;
-        if (!mOffOrigins[index].empty()) out << "  <- " << mOffOrigins[index];
+        if (mOffValidated[index]) {
+            ++provenOffsets;
+            out << "  off " << offName(id) << " = 0x" << std::hex << mOffsets[index] << std::dec
+                << "  PROVEN";
+            if (!mOffOrigins[index].empty()) out << "  <- " << mOffOrigins[index];
+        } else if (mOffCandidates[index] != 0) {
+            out << "  off " << offName(id) << " = 0x" << std::hex << mOffCandidates[index]
+                << std::dec << "  unproven (not used)";
+        } else {
+            out << "  off " << offName(id) << " = n/a";
+        }
         out << '\n';
     }
+    out << "  offsets proven: " << provenOffsets << '/' << OffCount << '\n';
     mSummary = out.str();
 }
 

@@ -81,6 +81,15 @@ bool plausibleActor(void* candidate) {
     return sdk::plausiblePointer(candidate);
 }
 
+/// Loads the memory map if it has not been loaded yet.
+///
+/// Every hand-written range check in this file goes through `AddressSpace`, which
+/// fails closed while the map is absent — so the map has to be loaded before the
+/// first check, not after it.
+void ensureMappingLoaded(sdk::AddressSpace& space) {
+    if (space.regionCount() == 0) space.refresh();
+}
+
 } // namespace
 
 World& World::get() {
@@ -88,7 +97,18 @@ World& World::get() {
     return instance;
 }
 
+Snapshot World::snapshot() const {
+    std::lock_guard lock(mMutex);
+    return mSnapshot;
+}
+
 void World::update(void* localPlayer, const Vec3& cameraPosition) {
+    // Held for the whole refresh: the probes read and write both the snapshot and
+    // the mProbed* flags, and a second thread entering mid-probe would see a
+    // half-written state and then dereference a candidate the first thread had
+    // already rejected.
+    std::lock_guard lock(mMutex);
+
     mSnapshot.localPlayer = localPlayer;
     mSnapshot.cameraPosition = cameraPosition;
     if (!localPlayer) {
@@ -97,10 +117,25 @@ void World::update(void* localPlayer, const Vec3& cameraPosition) {
     }
 
     auto& resolver = Resolver::get();
+    auto& space = sdk::AddressSpace::get();
+    ensureMappingLoaded(space);
 
     // Probing has to run before anything reads through the offsets, otherwise a
     // rejected candidate would be used once and poison the snapshot.
     probeOffsets(localPlayer);
+
+    // Nothing below may dereference an offset that no live object has confirmed.
+    // `offset()` returns 0 for an unproven category, and reading through 0 is
+    // still a fault, so the requirement is stated explicitly instead of relying
+    // on a null check after the fact.
+    if (!resolver.offsetValidated(OffId::ActorLevel) ||
+        !resolver.offsetValidated(OffId::ActorDimension)) {
+        mSnapshot.level = nullptr;
+        mSnapshot.dimension = nullptr;
+        mSnapshot.blockSource = nullptr;
+        mSnapshot.valid = false;
+        return;
+    }
 
     mSnapshot.level = sdk::fieldPointer(localPlayer, resolver.offset(OffId::ActorLevel));
     mSnapshot.dimension = sdk::fieldPointer(localPlayer, resolver.offset(OffId::ActorDimension));
@@ -120,8 +155,17 @@ void World::update(void* localPlayer, const Vec3& cameraPosition) {
     if (sdk::plausiblePointer(mSnapshot.dimension)) {
         const auto& candidates = Profile::get().candidates(OffId::DimensionBlockSource);
         for (const auto& candidate : candidates) {
+            if (!space.readable(mSnapshot.dimension, candidate.value + sizeof(void*))) continue;
             const auto blockSource = sdk::fieldPointer(mSnapshot.dimension, candidate.value);
             if (!sdk::plausiblePointer(blockSource)) continue;
+            // A vtable read and a virtual call are both dereferences of
+            // memory we did not allocate. Confirming the mapping first is what
+            // separates "this candidate is wrong" from a SIGSEGV.
+            if (!space.readable(blockSource, sizeof(void*))) continue;
+            void* const vtable = *reinterpret_cast<void* const*>(blockSource);
+            if (!sdk::plausiblePointer(vtable) || !space.readable(vtable, 19 * sizeof(void*))) continue;
+            const auto slot = static_cast<void* const*>(vtable)[18];
+            if (!slot) continue;
             const auto dimensionId = sdk::virtualCall<int>(blockSource, 18);
             if (dimensionId < -1 || dimensionId > 8) continue;
             resolver.confirmOffset(OffId::DimensionBlockSource, candidate.value, candidate.origin);
@@ -162,26 +206,36 @@ void World::update(void* localPlayer, const Vec3& cameraPosition) {
 
 void World::probeOffsets(void* localPlayer) {
     auto& resolver = Resolver::get();
+    if (!localPlayer) return;
 
-    if (!mProbedStateVector && localPlayer) {
-        mProbedStateVector = true;
+    auto& space = sdk::AddressSpace::get();
+    ensureMappingLoaded(space);
+    if (space.regionCount() == 0) return;
+
+    // Every read below goes through the map first. These candidates are
+    // hypotheses; a wrong one has to fail the check rather than fault the game.
+    // The flag is set only on success, so a probe that fails while the world is
+    // still loading is retried on the next frame instead of being abandoned.
+    if (!resolver.offsetValidated(OffId::ActorStateVector) && !mProbedStateVector) {
         for (const auto& candidate : Profile::get().candidates(OffId::ActorStateVector)) {
+            if (!space.readable(localPlayer, candidate.value + sizeof(void*))) continue;
             const auto pointer = sdk::fieldPointer(localPlayer, candidate.value);
-            if (!sdk::plausiblePointer(pointer)) continue;
+            if (!sdk::plausiblePointer(pointer) || !space.readable(pointer, sizeof(Vec3))) continue;
             const auto* position = reinterpret_cast<const Vec3*>(pointer);
             if (!position->finite()) continue;
             if (std::fabs(position->y) > 4000.f) continue;
             resolver.confirmOffset(OffId::ActorStateVector, candidate.value, candidate.origin);
             mSnapshot.playerPosition = *position;
+            mProbedStateVector = true;
             break;
         }
     }
 
-    if (!mProbedAabb && localPlayer) {
-        mProbedAabb = true;
+    if (!resolver.offsetValidated(OffId::ActorAabbComponent) && !mProbedAabb) {
         for (const auto& candidate : Profile::get().candidates(OffId::ActorAabbComponent)) {
+            if (!space.readable(localPlayer, candidate.value + sizeof(void*))) continue;
             const auto component = sdk::fieldPointer(localPlayer, candidate.value);
-            if (!sdk::plausiblePointer(component)) continue;
+            if (!sdk::plausiblePointer(component) || !space.readable(component, sizeof(sdk::AABB))) continue;
             const auto* bounds = reinterpret_cast<const sdk::AABB*>(component);
             if (!bounds->valid()) continue;
             // A real hitbox is small and sits on the player: anything taller than
@@ -192,7 +246,109 @@ void World::probeOffsets(void* localPlayer) {
             const auto center = bounds->center();
             if ((center - mSnapshot.playerPosition).length() > 16.f) continue;
             resolver.confirmOffset(OffId::ActorAabbComponent, candidate.value, candidate.origin);
+            mProbedAabb = true;
             break;
+        }
+    }
+
+    probeActorLevelAndDimension(localPlayer);
+}
+
+/// Proves `Actor::mLevel` and `Actor::mDimension` before either is dereferenced.
+///
+/// Both are confirmed by RTTI rather than by a value heuristic, because a class
+/// name survives a layout shuffle and "the pointer is 8-byte aligned" does not.
+/// An unproven offset blocks the whole snapshot: that turns a SIGSEGV inside game
+/// code into a mod that does nothing, which is the only acceptable failure here.
+void World::probeActorLevelAndDimension(void* localPlayer) {
+    auto& resolver = Resolver::get();
+    auto& space = sdk::AddressSpace::get();
+    ensureMappingLoaded(space);
+    if (space.regionCount() == 0) return;
+
+    // A pointer field can only be read if the field itself lies inside a mapped
+    // region, and the object it points at must have a readable vptr: every real
+    // polymorphic object on this ABI starts with one.
+    const auto readableObject = [&space](void* pointer) {
+        if (!sdk::plausiblePointer(pointer)) return false;
+        if (!space.readable(pointer, sizeof(void*))) return false;
+        void* vtable = nullptr;
+        std::memcpy(&vtable, pointer, sizeof(vtable));
+        return sdk::plausiblePointer(vtable) && space.readable(vtable, sizeof(void*));
+    };
+
+    const auto classNamed = [](void* pointer, const char* needle) {
+        const auto name = bes::core::rtti::className(pointer);
+        return !name.empty() && name.find(needle) != std::string::npos;
+    };
+
+    if (!resolver.offsetValidated(OffId::ActorLevel) && !mProbedLevel) {
+        for (const auto& candidate : Profile::get().candidates(OffId::ActorLevel)) {
+            if (!space.readable(localPlayer, candidate.value + sizeof(void*))) continue;
+            void* const level = sdk::fieldPointer(localPlayer, candidate.value);
+            if (!readableObject(level)) continue;
+            // "Level" also matches LevelRenderer / LevelChunk, so the negatives
+            // matter as much as the positive.
+            if (!classNamed(level, "Level")) continue;
+            if (classNamed(level, "Renderer") || classNamed(level, "Chunk")) continue;
+            resolver.confirmOffset(OffId::ActorLevel, candidate.value, candidate.origin);
+            mProbedLevel = true;
+            break;
+        }
+    }
+
+    if (!resolver.offsetValidated(OffId::ActorDimension) && !mProbedDimension) {
+        for (const auto& candidate : Profile::get().candidates(OffId::ActorDimension)) {
+            if (!space.readable(localPlayer, candidate.value + sizeof(void*))) continue;
+            void* const dimension = sdk::fieldPointer(localPlayer, candidate.value);
+            if (!readableObject(dimension)) continue;
+            const auto name = bes::core::rtti::className(dimension);
+            if (name.empty()) continue;
+            const bool isDimension = name.find("Dimension") != std::string::npos ||
+                                     name.find("Overworld") != std::string::npos ||
+                                     name.find("Nether") != std::string::npos ||
+                                     name.find("TheEnd") != std::string::npos;
+            if (!isDimension) continue;
+            resolver.confirmOffset(OffId::ActorDimension, candidate.value, candidate.origin);
+            mProbedDimension = true;
+            break;
+        }
+    }
+
+    // Level -> ActorManager. Proof is the strongest available without Zaphkiel:
+    // only the real ActorManager is accepted by the resolved getRuntimeActorList
+    // entry point, and an unrelated object will not be. So the probe asks the
+    // game and keeps the offset only if a plausible actor comes back.
+    if (!resolver.offsetValidated(OffId::LevelActorManager) && !mProbedActorManager &&
+        resolver.offsetValidated(OffId::ActorLevel) && gGetActorList) {
+        void* const level = sdk::fieldPointer(localPlayer, resolver.offset(OffId::ActorLevel));
+        if (readableObject(level)) {
+            for (const auto& candidate : Profile::get().candidates(OffId::LevelActorManager)) {
+                if (!space.readable(level, candidate.value + sizeof(void*))) continue;
+                void* const manager = sdk::fieldPointer(level, candidate.value);
+                if (!readableObject(manager)) continue;
+                std::vector<void*> list;
+                try {
+                    list = gGetActorList(manager);
+                } catch (...) {
+                    continue;
+                }
+                // An empty list is not proof: the wrong object could also yield
+                // nothing. Require at least one entry that looks like a live,
+                // polymorphic actor.
+                if (list.empty()) continue;
+                bool anyActor = false;
+                for (void* entry : list) {
+                    if (readableObject(entry) && !bes::core::rtti::className(entry).empty()) {
+                        anyActor = true;
+                        break;
+                    }
+                }
+                if (!anyActor) continue;
+                resolver.confirmOffset(OffId::LevelActorManager, candidate.value, candidate.origin);
+                mProbedActorManager = true;
+                break;
+            }
         }
     }
 }
@@ -205,9 +361,20 @@ std::vector<ActorEntry> World::actors() {
         const auto address = resolver.address(SigId::ActorManagerList);
         if (address) gGetActorList = reinterpret_cast<GetRuntimeActorListFn>(address);
     }
-    if (!gGetActorList || !mSnapshot.level) return result;
+    if (!gGetActorList) return result;
 
-    const auto actorManager = sdk::fieldPointer(mSnapshot.level, resolver.offset(OffId::LevelActorManager));
+    // Read the level through the lock. This runs on the picker/scan thread while
+    // the frame thread may be rewriting the snapshot, so touching mSnapshot
+    // directly here was the same race the mutex was added to close -- it would
+    // have left one path still reading the live struct.
+    const auto snapshot = this->snapshot();
+    if (!snapshot.level) return result;
+
+    // An unproven offset reads as 0, and reading a pointer field at offset 0
+    // yields the object's own vptr -- a real mapped address that would then be
+    // passed to the game as if it were an ActorManager. Require the proof.
+    if (!resolver.offsetValidated(OffId::LevelActorManager)) return result;
+    const auto actorManager = sdk::fieldPointer(snapshot.level, resolver.offset(OffId::LevelActorManager));
     if (!sdk::plausiblePointer(actorManager)) return result;
 
     std::vector<void*> list;
@@ -223,8 +390,15 @@ std::vector<ActorEntry> World::actors() {
         isPlayer = reinterpret_cast<ActorIsPlayerFn>(address);
     }
 
-    const auto aabbOffset = resolver.offset(OffId::ActorAabbComponent);
-    const auto stateOffset = resolver.offset(OffId::ActorStateVector);
+    // 0 means "not proven", not "field at zero": reading either of these at
+    // offset 0 would hand back the actor's vptr and write it into the snapshot as
+    // a position. Callers that see 0 fall back to the AABB centre.
+    const auto aabbOffset = resolver.offsetValidated(OffId::ActorAabbComponent)
+                                ? resolver.offset(OffId::ActorAabbComponent)
+                                : 0;
+    const auto stateOffset = resolver.offsetValidated(OffId::ActorStateVector)
+                                 ? resolver.offset(OffId::ActorStateVector)
+                                 : 0;
 
     result.reserve(list.size());
     for (void* candidate : list) {
@@ -239,16 +413,28 @@ std::vector<ActorEntry> World::actors() {
                                   : bes::core::rtti::classifyActor(entry.className) ==
                                         bes::core::rtti::ActorKind::Player;
 
-        if (const auto boundsComponent = sdk::fieldPointer(candidate, aabbOffset);
-            sdk::plausiblePointer(boundsComponent)) {
-            entry.bounds = *reinterpret_cast<const sdk::AABB*>(boundsComponent);
+        // Both offsets are 0 unless proven, and `fieldPointer(x, 0)` is never
+        // what we want here -- it aliases the vptr. The `!= 0` is load-bearing,
+        // not defensive style.
+        if (aabbOffset != 0) {
+            if (const auto boundsComponent = sdk::fieldPointer(candidate, aabbOffset);
+                sdk::plausiblePointer(boundsComponent) &&
+                sdk::AddressSpace::get().readable(boundsComponent, sizeof(sdk::AABB))) {
+                entry.bounds = *reinterpret_cast<const sdk::AABB*>(boundsComponent);
+            }
         }
-        if (const auto stateVector = sdk::fieldPointer(candidate, stateOffset);
-            sdk::plausiblePointer(stateVector)) {
-            entry.position = *reinterpret_cast<const Vec3*>(stateVector);
-        } else if (entry.bounds.valid()) {
-            entry.position = entry.bounds.center();
+        bool havePosition = false;
+        if (stateOffset != 0) {
+            if (const auto stateVector = sdk::fieldPointer(candidate, stateOffset);
+                sdk::plausiblePointer(stateVector) &&
+                sdk::AddressSpace::get().readable(stateVector, sizeof(Vec3))) {
+                entry.position = *reinterpret_cast<const Vec3*>(stateVector);
+                havePosition = true;
+            }
         }
+        // Fall back on "no position was read", not on "the position looks like
+        // zero": an actor standing at the origin has a legitimate zero position.
+        if (!havePosition && entry.bounds.valid()) entry.position = entry.bounds.center();
 
         entry.displayName = entry.className;
         result.push_back(std::move(entry));
@@ -264,6 +450,9 @@ std::string World::blockName(void* blockSource, const bes::sdk::BlockPos& pos) {
 }
 
 void* World::currentBlockSource() {
+    // Called from the scan thread while the frame thread owns update(); read it
+    // under the same lock as everything else that touches the snapshot.
+    std::lock_guard lock(mMutex);
     return mSnapshot.blockSource;
 }
 

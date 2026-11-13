@@ -211,7 +211,7 @@ bool BlockTypeProbe::dumpNearPlayer() {
         return false;
     }
 
-    const auto& snapshot = world.snapshot();
+    const auto snapshot = world.snapshot();
     if (!snapshot.valid) {
         core::log::warn("probe: world snapshot is not valid yet, enter a world first");
         return false;

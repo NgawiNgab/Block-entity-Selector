@@ -172,8 +172,19 @@ bool Runtime::enable(pl::mod::ModContext&) {
 
 bool Runtime::disable(pl::mod::ModContext&) {
     mEnabled = false;
+    // Order matters: stop the tick before publishing "disabled", or the frame
+    // thread can enter onTick between the two and read state this is tearing down.
     persistConfig();
     modules::SelectorModule::get().setEnabled(false);
+    // The frame hook is the one tick driver left, so leaving it installed while
+    // disabled means the render thread keeps entering our detour every frame for
+    // nothing. It used to be removed only in unload(), which is why toggling off
+    // and on again behaved differently from a fresh start.
+    uninstallFrameTick();
+    // A stale player pointer from a world that has since unloaded must not
+    // survive into the next enable(): the offsets it supports were proven against
+    // that world's objects.
+    mLastPlayer = nullptr;
     return true;
 }
 
@@ -223,15 +234,7 @@ bool Runtime::installHooks() {
 void Runtime::onLocalPlayerTick(void* player) {
     if (!player) return;
     mLastPlayer = player;
-
-    // Camera position lives on the player renderer; when it is not reachable
-    // yet the world layer falls back to the player's eye position, which is
-    // correct in first person anyway.
-    float camera[3]{};
-    const bool hasCamera = gamehooks::cameraPosition(camera);
-    modules::SelectorModule::get().onTick(player, nowMilliseconds(),
-                                         hasCamera ? bes::sdk::Vec3{camera[0], camera[1], camera[2]}
-                                                   : bes::sdk::Vec3{});
+    // Deliberately does NOT tick the module. See onFrame().
 }
 
 void swapBuffersDetour(void* display, void* surface) {
@@ -275,7 +278,26 @@ void Runtime::uninstallFrameTick() {
     mFrameTickInstalled = false;
 }
 
+std::size_t Runtime::provenOffsets() {
+    std::size_t proven = 0;
+    for (std::size_t index = 0; index < OffCount; ++index) {
+        if (Resolver::get().offsetValidated(static_cast<OffId>(index))) ++proven;
+    }
+    return proven;
+}
+
 void Runtime::onFrame() {
+    // The single tick driver.
+    //
+    // This used to be driven from two places: the ClientInstance update hook (game
+    // thread) and this frame hook (render thread). Both called into World::update,
+    // so one thread could rewrite the snapshot while the other was reading it.
+    // The tombstone shows the result -- the crash landed on "Rendering Pool" in
+    // World::update, with the update-thread tick as the other candidate driver.
+    //
+    // The frame hook is the surviving driver: it runs on one thread, it is the
+    // frame the highlight is drawn against, and it keeps ticking while the game is
+    // paused, which the update hook does not.
     if (!mEnabled || !mLastPlayer) return;
     modules::SelectorModule::get().onTick(mLastPlayer, nowMilliseconds());
 }
@@ -305,6 +327,11 @@ std::string Runtime::dumpDiagnostics() {
     }
     report << '\n';
     report << "2. signatures:       " << Resolver::get().resolvedCount() << '/' << SigCount << " resolved\n";
+    // Offsets are a separate question from signatures and a separate question from
+    // hooks. An unproven offset is not dereferenced at all now, so this number is
+    // the difference between "the mod is idle because nothing matched" and "the
+    // mod is idle because nothing has been proven on this build yet".
+    report << "   offsets proven:   " << provenOffsets() << '/' << OffCount << '\n';
     report << "3. game hooks:       " << (mInstalled ? "installed" : "NOT installed") << '\n';
     report << "   frame tick:       " << (mFrameTickInstalled ? "installed" : "NOT installed") << '\n';
     report << "   local player:     " << (mLastPlayer ? "yes" : "NOT yet seen") << '\n';

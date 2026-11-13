@@ -1,5 +1,6 @@
 #include "core/Logging.hpp"
 #include "core/Profile.hpp"
+#include "core/Resolver.hpp"
 #include "core/Rtti.hpp"
 #include "selection/BlockCursor.hpp"
 #include "selection/Identifier.hpp"
@@ -203,6 +204,81 @@ void testOffsetsAreSane() {
         CHECK(candidate.value % 8 == 0);
         CHECK(candidate.value < 0x1000);
     }
+}
+
+/// The crash on 2026-11-13 came from `Resolver::offset()` handing out a profile
+/// candidate that no live object had ever confirmed: a 0x9 pointer reached game
+/// code and the game faulted on `ldr s0, [x1]`. These checks pin the fix.
+///
+/// They are written as positive *and* negative assertions on purpose. Asserting
+/// only "unproven reads as 0" would still pass if `confirmOffset` did nothing at
+/// all, so the promotion path is checked in the same test.
+void testOffsetsRequireProof() {
+    using bes::core::OffId;
+    using bes::core::Resolver;
+
+    // Load a profile this test owns. `Profile` is a process-wide singleton and
+    // earlier tests already replaced its offsets, so inheriting that state would
+    // make these assertions depend on test order.
+    auto& profile = bes::core::Profile::get();
+    CHECK(profile.loadFromText(R"({
+        "offsets": {
+            "actor_level":      { "candidates": [ { "offset": "0x1F0" } ] },
+            "actor_dimension":  { "candidates": [ { "offset": "0x1E0" } ] },
+            "actor_state_vector": { "candidates": [ { "offset": "0x228" } ] }
+        }
+    })",
+                              "offsets", false));
+
+    auto& resolver = Resolver::get();
+    resolver.resolveAll("libthisdoesnotexist.so");
+
+    // 1. A category with a profile candidate must still read as unusable until
+    //    something proves it. This is the exact bug: 0x1F0 was live immediately.
+    CHECK(!resolver.offsetValidated(OffId::ActorLevel));
+    CHECK(resolver.offset(OffId::ActorLevel) == 0);
+    CHECK(resolver.offsetCandidate(OffId::ActorLevel) == 0x1F0);
+
+    CHECK(!resolver.offsetValidated(OffId::ActorDimension));
+    CHECK(resolver.offset(OffId::ActorDimension) == 0);
+    CHECK(resolver.offsetCandidate(OffId::ActorDimension) == 0x1E0);
+
+    // 2. A category the profile says nothing about reads the same way, so a
+    //    caller cannot distinguish them by accident.
+    CHECK(resolver.offsetCandidate(OffId::ActorStateVector) == 0x228);
+    CHECK(resolver.offset(OffId::ActorStateVector) == 0);
+
+    // 3. Proving one category promotes that one only.
+    resolver.confirmOffset(OffId::ActorLevel, 0x2A8, "test");
+    CHECK(resolver.offsetValidated(OffId::ActorLevel));
+    CHECK(resolver.offset(OffId::ActorLevel) == 0x2A8);
+    CHECK(!resolver.offsetValidated(OffId::ActorDimension));
+    CHECK(resolver.offset(OffId::ActorDimension) == 0);
+
+    // 4. Proof is recorded against the proven value, not the profile's guess,
+    //    and it is idempotent.
+    CHECK(resolver.offsetCandidate(OffId::ActorLevel) == 0x1F0);
+    CHECK(resolver.offset(OffId::ActorLevel) == 0x2A8);
+    resolver.confirmOffset(OffId::ActorLevel, 0x2A8, "test again");
+    CHECK(resolver.offset(OffId::ActorLevel) == 0x2A8);
+
+    // 5. The summary states proof status rather than printing a bare hex value,
+    //    because "0x1F0" and "0x1F0, proven" are different claims.
+    const auto& summary = resolver.summary();
+    CHECK(summary.find("PROVEN") != std::string::npos);
+    CHECK(summary.find("unproven (not used)") != std::string::npos);
+    CHECK(summary.find("offsets proven:") != std::string::npos);
+
+    // 6. Every category the renderer or world layer could touch must start
+    //    unproven on a fresh resolve. If a future profile ever marks something
+    //    validated at load time, this catches it.
+    std::size_t provenAtStartup = 0;
+    for (std::size_t index = 0; index < bes::core::OffCount; ++index) {
+        const auto id = static_cast<OffId>(index);
+        if (id == OffId::ActorLevel) continue; // proven above, deliberately
+        if (resolver.offsetValidated(id)) ++provenAtStartup;
+    }
+    CHECK(provenAtStartup == 0);
 }
 
 void testScannerSettings() {
@@ -619,6 +695,7 @@ int main() {
     testProfileParsing();
     testVtableCandidates();
     testOffsetsAreSane();
+    testOffsetsRequireProof();
     testScannerSettings();
     testBlockCursor();
     testSelectionMatching();

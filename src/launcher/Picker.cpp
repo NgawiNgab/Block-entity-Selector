@@ -66,7 +66,7 @@ void Picker::uninstall() {
 
 std::string Picker::pickEntityAtCrosshair() {
     auto& world = world::World::get();
-    const auto& snapshot = world.snapshot();
+    const auto snapshot = world.snapshot();
     if (!snapshot.valid) return {};
 
     const auto origin = snapshot.cameraPosition;
@@ -94,7 +94,7 @@ std::string Picker::pickEntityAtCrosshair() {
 
 std::string Picker::pickBlockAtFeet() {
     auto& world = world::World::get();
-    const auto& snapshot = world.snapshot();
+    const auto snapshot = world.snapshot();
     if (!snapshot.valid) return {};
 
     // Start slightly below the camera so a block the player is standing in wins
@@ -150,7 +150,7 @@ void Picker::pickUnderCrosshair() {
     // report, so name the reason instead of exiting silently: without a live
     // snapshot there is no player, and without a player the picker cannot see the
     // world at all.
-    const auto& snapshot = world::World::get().snapshot();
+    const auto snapshot = world::World::get().snapshot();
     if (!snapshot.valid) {
         // Once per state change, not once per tap: the condition is either true
         // for a run of taps or it is not, and repeating it buries the startup
