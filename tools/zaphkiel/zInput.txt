@@ -34,18 +34,24 @@ findclass<ScreenContext>
 /* confirms it. So a struct dump here is not a formality -- it is the only    */
 /* way to know whether the candidate was ever right.                          */
 /*
+   struct<X><OFF> scans ONE offset -- `struct<Level><0x180>` means "every access
+   to +0x180", NOT "the layout up to 0x180". Asking for struct<Actor><0x600>
+   therefore scans 0x600 and nothing else; that mistake cost a run.
+
    Already self-proving, no Zaphkiel needed (geometric validation works):
      struct<Actor><0x228>    -> actor_state_vector
      struct<Actor><0x230>    -> actor_aabb_component
-   These three are NOT self-proving and are the current blocker:
-     struct<Actor><0x600>    -> actor_level, actor_dimension
-     struct<Dimension><0x200>-> dimension_block_source
-   Dump the whole object rather than one offset: a struct<> call shows what is
-   actually at 0x1F0, whereas asking for 0x1F0 shows only that something is
-   there. See docs/ZAPHKIEL-REQUEST-actor-layout.md for the full request.
+   Not self-proving, currently the blocker -- one entry per candidate:
+     struct<Actor><0x1e8>    -> actor_level (wrapper hypothesis)
+     struct<Actor><0x1f0>    -> actor_level (raw pointer hypothesis)
+     struct<Actor><0x1e0>    -> actor_dimension
+     struct<Dimension><0xd0> -> dimension_block_source
+   See docs/ZAPHKIEL-REQUEST-actor-offsets-2.md for the full request.
 */
-struct<Actor><0x600>
-struct<Dimension><0x200>
+struct<Actor><0x1e8>
+struct<Actor><0x1f0>
+struct<Actor><0x1e0>
+struct<Dimension><0xd0>
 
 /* --- 4. Confirming the entity pipeline --------------------------------- */
 /* The actor list is the backbone of entity highlighting.                 */
