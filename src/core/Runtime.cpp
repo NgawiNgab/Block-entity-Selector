@@ -299,7 +299,17 @@ void Runtime::onFrame() {
     // frame the highlight is drawn against, and it keeps ticking while the game is
     // paused, which the update hook does not.
     if (!mEnabled || !mLastPlayer) return;
-    modules::SelectorModule::get().onTick(mLastPlayer, nowMilliseconds());
+
+    // Sample the camera here, on the frame being drawn. `cameraPosition()` is the
+    // only consumer of the ClientInstance -> LevelRenderer -> LevelRendererPlayer
+    // -> cam-pos chain, so it is also where those three offsets prove themselves.
+    // It returns false until the whole chain validates, and the world layer then
+    // falls back to the player's eye position, which is correct in first person.
+    float camera[3]{};
+    const bool hasCamera = gamehooks::cameraPosition(camera);
+    modules::SelectorModule::get().onTick(mLastPlayer, nowMilliseconds(),
+                                         hasCamera ? bes::sdk::Vec3{camera[0], camera[1], camera[2]}
+                                                   : bes::sdk::Vec3{});
 }
 
 std::string Runtime::dumpDiagnostics() {

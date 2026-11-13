@@ -20,6 +20,10 @@ Resolver& Resolver::get() {
 }
 
 bool Resolver::resolveAll(std::string_view libraryName) {
+    // Runs once, from load()/prepareGame(), before any hook or frame callback can
+    // exist. That is why the tables below are written without mMutex: taking it
+    // here would be correct but would also suggest this is callable concurrently,
+    // and it is not. refreshSummary() takes the lock for the read side.
     if (mResolved) return true;
 
     const auto& profile = Profile::get();
@@ -137,22 +141,32 @@ std::uintptr_t Resolver::address(SigId id) const {
     return index < SigCount ? mAddresses[index] : 0;
 }
 
+std::string Resolver::summary() const {
+    std::lock_guard lock(mMutex);
+    return mSummary;
+}
+
 std::size_t Resolver::offset(OffId id) const {
     const auto index = static_cast<std::size_t>(id);
     if (index >= OffCount) return 0;
     // Fail closed: an unproven offset is not a usable offset. Returning the
     // profile's guess here is what let a wrong field offset reach game code.
+    std::lock_guard lock(mMutex);
     return mOffValidated[index] ? mOffsets[index] : 0;
 }
 
 bool Resolver::offsetValidated(OffId id) const {
     const auto index = static_cast<std::size_t>(id);
-    return index < OffCount && mOffValidated[index];
+    if (index >= OffCount) return false;
+    std::lock_guard lock(mMutex);
+    return mOffValidated[index];
 }
 
 std::size_t Resolver::offsetCandidate(OffId id) const {
     const auto index = static_cast<std::size_t>(id);
-    return index < OffCount ? mOffCandidates[index] : 0;
+    if (index >= OffCount) return 0;
+    std::lock_guard lock(mMutex);
+    return mOffCandidates[index];
 }
 
 bool Resolver::hasOffsetCandidates(OffId id) const {
@@ -162,20 +176,34 @@ bool Resolver::hasOffsetCandidates(OffId id) const {
 void Resolver::confirmOffset(OffId id, std::size_t value, std::string_view evidence) {
     const auto index = static_cast<std::size_t>(id);
     if (index >= OffCount) return;
-    if (mOffValidated[index] && mOffsets[index] == value) return;
 
+    {
+        std::lock_guard lock(mMutex);
+        if (mOffValidated[index] && mOffsets[index] == value) return;
+        mOffsets[index] = value;
+        mOffValidated[index] = true;
+        mOffOrigins[index] = std::string(evidence);
+    }
+
+    // Logged outside the lock: the logger formats and writes, and holding the
+    // offset mutex through that would serialise the render thread on stdout.
     std::ostringstream message;
     message << "resolver: offset " << offName(id) << " -> 0x" << std::hex << value << std::dec
             << " (evidence: " << evidence << ')';
     log::info(message.str());
 
-    mOffsets[index] = value;
-    mOffValidated[index] = true;
-    mOffOrigins[index] = std::string(evidence);
+    // Rebuilds and stores mSummary under the lock. Kept as a separate call because
+    // resolveAll() and the constructor also need it.
     refreshSummary();
 }
 
 void Resolver::refreshSummary() {
+    std::lock_guard lock(mMutex);
+    buildSummaryLocked();
+}
+
+/// Builds mSummary. Caller must hold mMutex.
+void Resolver::buildSummaryLocked() {
     std::ostringstream out;
     for (std::size_t index = 0; index < SigCount; ++index) {
         const auto id = static_cast<SigId>(index);

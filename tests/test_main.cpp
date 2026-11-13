@@ -637,6 +637,41 @@ void testDiagnosticReportBuffer() {
 /// The dangerous property is that truncation does not fail loudly. These checks
 /// pin the two halves that matter: the capacity must exceed a real device map, and
 /// truncation must be observable so a negative answer can be treated as unknown.
+/// `gamehooks::cameraPosition()` confirms three offsets or none: the chain is
+/// only promoted when the whole path validates and the result looks like a real
+/// camera. The plausibility rule inside it is what separates "this candidate is a
+/// cam pos" from "this candidate points at a zeroed struct", so it is the part
+/// worth pinning. It is reproduced here because the real one lives in a lambda
+/// inside a function that needs the preloader SDK to link.
+void testCameraPlausibility() {
+    const auto plausible = [](float x, float y, float z) {
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) return false;
+        if (std::fabs(y) > 65536.f) return false;
+        if (x == 0.f && y == 0.f && z == 0.f) return false;
+        return true;
+    };
+
+    // A normal standing camera.
+    CHECK(plausible(100.5f, 70.f, -230.25f));
+    // Negative coordinates are ordinary.
+    CHECK(plausible(-1.f, 64.f, -1.f));
+    // Deepslate depth and build-limit height both still count as real.
+    CHECK(plausible(0.f, -60.f, 0.f));
+    CHECK(plausible(0.f, 319.f, 0.f));
+
+    // The zeroed-struct signature. A live camera is essentially never at exactly
+    // 0,0,0 -- and if it were, refusing one frame costs nothing while accepting a
+    // zeroed read would put the camera at world origin and draw every box wrong.
+    CHECK(!plausible(0.f, 0.f, 0.f));
+    // Non-finite values are the other way a bad read shows up.
+    CHECK(!plausible(std::nanf(""), 64.f, 0.f));
+    CHECK(!plausible(0.f, 64.f, std::nanf("")));
+    CHECK(!plausible(0.f, INFINITY, 0.f));
+    // Beyond any sane height envelope.
+    CHECK(!plausible(0.f, 70000.f, 0.f));
+    CHECK(!plausible(0.f, -70000.f, 0.f));
+}
+
 void testAddressSpaceCapacity() {
     // Measured, not guessed: the 2026-11-13 tombstone's memory map has 6022
     // regions. A cap at or below that silently blinds the probes.
@@ -733,6 +768,7 @@ int main() {
     testIdentifierIndex();
     testLibcxxStringDecoding();
     testDiagnosticReportBuffer();
+    testCameraPlausibility();
     testAddressSpaceCapacity();
     testModulePresence();
 
