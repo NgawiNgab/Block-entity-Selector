@@ -416,12 +416,52 @@ void HighlightRenderer::emitTriangles(void* screenContext, void* tessellator, vo
     mLastVertices += geometry.triangleVertices.size();
 }
 
-void HighlightRenderer::draw(void* levelRenderer, void* screenContext) {
-    if (!mInstalled) return;
-    if (!levelRenderer || !sdk::plausiblePointer(screenContext)) return;
+void HighlightRenderer::noteStage(RenderStage stage) {
+    // Counters are read by the diagnostics dump on the launcher UI thread, so a
+    // plain increment here would race that read.
+    std::lock_guard lock(mStageMutex);
+    mLastStage = stage;
+    const auto index = static_cast<std::size_t>(stage);
+    if (index < kRenderStageCount) ++mStageCounts[index];
+}
 
-    const auto targets = selection::Scanner::get().targets();
-    if (targets.blocks.empty() && targets.entityBoxes.empty()) return;
+RenderStage HighlightRenderer::lastStage() const {
+    std::lock_guard lock(mStageMutex);
+    return mLastStage;
+}
+
+bool HighlightRenderer::selfTest() {
+    if (!mInstalled) {
+        mLastError = "self-test: renderer not installed";
+        return false;
+    }
+    // Only arms the flag; the box is emitted on the next frame, inside the real
+    // draw path, so the test cannot pass through different code than a highlight.
+    mPendingSelfTest.store(true, std::memory_order_release);
+    core::log::info("renderer: self-test armed, a box will be drawn at your feet on the next frame");
+    return true;
+}
+
+void HighlightRenderer::draw(void* levelRenderer, void* screenContext) {
+    if (!mInstalled) { noteStage(RenderStage::NotInstalled); return; }
+    if (!levelRenderer || !sdk::plausiblePointer(screenContext)) { noteStage(RenderStage::BadArguments); return; }
+
+    auto targets = selection::Scanner::get().targets();
+
+    // A self-test draws one box around the player regardless of what is selected,
+    // so "does the drawing path work at all" is answerable without a target.
+    if (mPendingSelfTest.exchange(false, std::memory_order_acq_rel)) {
+        const auto snapshot = world::World::get().snapshot();
+        if (snapshot.valid) {
+            const auto& feet = snapshot.playerPosition;
+            targets.blocks.push_back(bes::sdk::BlockPos::fromCorner(feet));
+            core::log::info("renderer: self-test emitting one box at the player's feet");
+        } else {
+            core::log::warn("renderer: self-test needs a valid world snapshot; enter a world first");
+        }
+    }
+
+    if (targets.blocks.empty() && targets.entityBoxes.empty()) { noteStage(RenderStage::NoTargets); return; }
 
     auto& resolver = Resolver::get();
 
@@ -436,13 +476,14 @@ void HighlightRenderer::draw(void* levelRenderer, void* screenContext) {
     // against the API it is about to be handed to -- no ClientInstance hop, and no
     // dependence on an offset that BedrockTools does not corroborate.
     const auto tessellatorOffset = resolver.offset(OffId::ScreenContextTessellator);
-    if (!tessellatorOffset) return;
+    if (!tessellatorOffset) { noteStage(RenderStage::NoTessellator); return; }
     auto& space = sdk::AddressSpace::get();
     if (space.regionCount() == 0) space.refresh();
-    if (!space.readable(screenContext, tessellatorOffset + sizeof(void*))) return;
+    if (!space.readable(screenContext, tessellatorOffset + sizeof(void*))) { noteStage(RenderStage::NoTessellator); return; }
     const auto tessellatorPointer = sdk::fieldPointer(screenContext, tessellatorOffset);
     if (!sdk::plausiblePointer(tessellatorPointer) ||
         !space.readable(tessellatorPointer, kTessellatorProbeBytes)) {
+        noteStage(RenderStage::NoTessellator);
         return;
     }
     void* tessellator = tessellatorPointer;
@@ -462,9 +503,9 @@ void HighlightRenderer::draw(void* levelRenderer, void* screenContext) {
     // Camera position is kept fresh by the tick path (it reads the same field
     // the renderer uses), so no per-frame game lookups are needed here.
     const auto camera = world::World::get().snapshot().cameraPosition;
-    if (!camera.finite()) return;
+    if (!camera.finite()) { noteStage(RenderStage::NoCamera); return; }
 
-    if (!ensureMaterial()) return;
+    if (!ensureMaterial()) { noteStage(RenderStage::NoMaterial); return; }
     void* material = &gSelectionMaterial;
 
     const Style style = this->style();
@@ -500,7 +541,10 @@ void HighlightRenderer::draw(void* levelRenderer, void* screenContext) {
         }
     }
 
-    if (geometry.lineVertices.empty() && geometry.triangleVertices.empty()) return;
+    if (geometry.lineVertices.empty() && geometry.triangleVertices.empty()) {
+        noteStage(RenderStage::EmptyGeometry);
+        return;
+    }
 
     if (style.seeThrough) {
         // Through-wall pass: everything is drawn with depth testing off, which
@@ -514,6 +558,7 @@ void HighlightRenderer::draw(void* levelRenderer, void* screenContext) {
     }
 
     ++mFrames;
+    noteStage(RenderStage::Drew);
 }
 
 } // namespace bes::render

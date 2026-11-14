@@ -2,6 +2,7 @@
 #include "core/Profile.hpp"
 #include "core/Resolver.hpp"
 #include "core/Rtti.hpp"
+#include "render/RenderStage.hpp"
 #include "selection/BlockCursor.hpp"
 #include "selection/Identifier.hpp"
 #include "selection/Scanner.hpp"
@@ -630,21 +631,44 @@ void testDiagnosticReportBuffer() {
     CHECK(bes::core::log::peekReport().empty());
 }
 
-/// The diagnostics read `offsets proven: 0/11` on a live player with every probe
-/// correctly written. The cause was the memory map, not the probes: a real
-/// Minecraft process maps 6022 regions and kMaxRegions was 4096, so the library's
-/// own mappings -- and everything above them -- read as unmapped. Every guarded
-/// check then answered "not readable" and every correct candidate was rejected.
-///
-/// The dangerous property is that truncation does not fail loudly. These checks
-/// pin the two halves that matter: the capacity must exceed a real device map, and
-/// truncation must be observable so a negative answer can be treated as unknown.
-/// `gamehooks::cameraPosition()` confirms three offsets or none: the chain is
-/// only promoted when the whole path validates and the result looks like a real
-/// camera. The plausibility rule inside it is what separates "this candidate is a
-/// cam pos" from "this candidate points at a zeroed struct", so it is the part
-/// worth pinning. It is reproduced here because the real one lives in a lambda
-/// inside a function that needs the preloader SDK to link.
+/// The renderer used to expose one number, `frames`, which only counts SUCCESSFUL
+/// draws. `frames: 0` therefore meant any of several different things -- not
+/// installed, no target, no tessellator, no camera, no material, empty geometry --
+/// and a report could not distinguish "rendering is broken" from "there was
+/// nothing to draw". The stage names are now part of the diagnostics contract, so
+/// they are checked here: a stage that loses its name reports as "unknown" and
+/// silently collapses that distinction again.
+void testRenderStageNames() {
+    using Stage = bes::render::RenderStage;
+    const auto stageName = &bes::render::renderStageName;
+
+    // Every stage must have a distinct, non-empty name.
+    const Stage all[] = {Stage::NotInstalled, Stage::BadArguments, Stage::NoTargets,
+                         Stage::NoTessellator, Stage::NoCamera,     Stage::NoMaterial,
+                         Stage::EmptyGeometry, Stage::Drew};
+    // Pins the count to the list above; a new enumerator must be added in both
+    // places or this fails rather than going untested.
+    CHECK(std::size(all) == bes::render::kRenderStageCount);
+
+    std::vector<std::string> names;
+    for (const auto stage : all) {
+        const char* name = stageName(stage);
+        CHECK(name != nullptr);
+        CHECK(name[0] != '\0');
+        CHECK(std::string(name) != "unknown");
+        names.push_back(name);
+    }
+    for (std::size_t a = 0; a < names.size(); ++a) {
+        for (std::size_t b = a + 1; b < names.size(); ++b) {
+            CHECK(names[a] != names[b]);
+        }
+    }
+
+    // The two states a user most needs told apart.
+    CHECK(std::string(stageName(Stage::NoTargets)) == "no targets");
+    CHECK(std::string(stageName(Stage::Drew)) == "drew");
+}
+
 /// Every offset in the profile is now corroborated by an external source for this
 /// exact build (BedrockTools `include/bedrocktools/sdk/offsets/*.hpp`, whose
 /// Render.hpp was last changed by "feat: 26.60 support"). That makes the table
@@ -653,6 +677,7 @@ void testDiagnosticReportBuffer() {
 ///
 /// The values are duplicated here on purpose. A test that read them from the
 /// profile could only prove the profile is self-consistent.
+
 void testOffsetsMatchReference() {
     struct Reference {
         bes::core::OffId id;
@@ -701,6 +726,12 @@ void testOffsetsMatchReference() {
     // (Actor::mActorRotationComponent = 0x238); noted rather than tested.
 }
 
+/// `gamehooks::cameraPosition()` confirms three offsets or none: the chain is
+/// only promoted when the whole path validates and the result looks like a real
+/// camera. The plausibility rule inside it is what separates "this candidate is a
+/// cam pos" from "this candidate points at a zeroed struct", so it is the part
+/// worth pinning. It is reproduced here because the real one lives in a lambda
+/// inside a function that needs the preloader SDK to link.
 void testCameraPlausibility() {
     const auto plausible = [](float x, float y, float z) {
         if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) return false;
@@ -730,6 +761,15 @@ void testCameraPlausibility() {
     CHECK(!plausible(0.f, -70000.f, 0.f));
 }
 
+/// The diagnostics read `offsets proven: 0/11` on a live player with every probe
+/// correctly written. The cause was the memory map, not the probes: a real
+/// Minecraft process maps 6022 regions and kMaxRegions was 4096, so the library's
+/// own mappings -- and everything above them -- read as unmapped. Every guarded
+/// check then answered "not readable" and every correct candidate was rejected.
+///
+/// The dangerous property is that truncation does not fail loudly. These checks
+/// pin the two halves that matter: the capacity must exceed a real device map, and
+/// truncation must be observable so a negative answer can be treated as unknown.
 void testAddressSpaceCapacity() {
     // Measured, not guessed: the 2026-11-13 tombstone's memory map has 6022
     // regions. A cap at or below that silently blinds the probes.
@@ -826,6 +866,7 @@ int main() {
     testIdentifierIndex();
     testLibcxxStringDecoding();
     testDiagnosticReportBuffer();
+    testRenderStageNames();
     testOffsetsMatchReference();
     testCameraPlausibility();
     testAddressSpaceCapacity();

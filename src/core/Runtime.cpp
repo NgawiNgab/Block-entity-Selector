@@ -384,8 +384,16 @@ std::string Runtime::dumpDiagnostics() {
     report << "   cmdline:          \"" << evidence.processName << "\"\n";
     report << "   comm:             \"" << evidence.processCom << "\"\n";
     report << "\nrenderer installed: " << (render::HighlightRenderer::get().installed() ? "yes" : "no") << '\n';
-    report << "renderer frames: " << render::HighlightRenderer::get().frames() << '\n';
-    report << "last draw vertices: " << render::HighlightRenderer::get().lastDrawVertices() << '\n';
+    {
+        auto& renderer = render::HighlightRenderer::get();
+        report << "renderer frames: " << renderer.frames() << '\n';
+        report << "last draw vertices: " << renderer.lastDrawVertices() << '\n';
+        // frames() only counts successful draws, so on its own it cannot say
+        // whether rendering is broken or simply has nothing to draw. The last
+        // stage says where the attempt stopped.
+        report << "renderer stage: " << render::renderStageName(renderer.lastStage()) << '\n';
+        report << "renderer error: " << (renderer.lastError()[0] ? renderer.lastError() : "none") << '\n';
+    }
     report << "selector enabled: " << (modules::SelectorModule::get().enabled() ? "yes" : "no") << '\n';
     report << "target: " << modules::SelectorModule::get().targetLabel() << '\n';
 

@@ -10,6 +10,10 @@ cd "$(dirname "$0")/.."
 # The Zaphkiel converter is pure Python and gets tested alongside the C++ code.
 if command -v python3 >/dev/null 2>&1; then
     python3 tools/zaphkiel/test_apply_output.py
+    # Source-level invariant: every exit from HighlightRenderer::draw() must
+    # record a RenderStage. The host build cannot link the renderer, so this is
+    # checked against the source text.
+    python3 tools/check_draw_stages.py
 else
     echo "python3 not found; skipping the converter tests" >&2
 fi
