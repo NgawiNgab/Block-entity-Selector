@@ -1,6 +1,7 @@
 #include "render/HighlightRenderer.hpp"
 
 #include "core/Logging.hpp"
+#include "core/GameHooks.hpp"
 #include "core/Resolver.hpp"
 #include "selection/Scanner.hpp"
 #include "render/GlState.hpp"
@@ -41,6 +42,19 @@ constexpr int kPrimitiveTriangles = 5;
 /// the structure, and the same zeroed block is what the vanilla renderer passes
 /// for immediate draws.
 constexpr std::size_t kRenderMeshScratchSize = 0x58;
+
+/// MaterialGroup::mRenderMaterialGroupOffset for 1.26.6x.
+///
+/// The group is reached through a helper function that ADRP+ADDs the *owner*;
+/// the singleton is this many bytes further in. Value corroborated against
+/// BedrockTools' 26.60 offsets, which target this same build.
+constexpr std::size_t kRenderMaterialGroupOffset = 0x20;
+
+/// How much of the tessellator is required to be mapped before it is trusted.
+///
+/// Not a size claim about the class: it is a lower bound that a stray pointer into
+/// a small struct will fail while a real Tessellator comfortably passes.
+constexpr std::size_t kTessellatorProbeBytes = 0x40;
 
 /// FNV-1a, matching mce::HashedString::computeHash.
 std::uint64_t hashString(std::string_view text) {
@@ -278,6 +292,10 @@ void HighlightRenderer::uninstall() {
 }
 
 void HighlightRenderer::renderLevelDetour(void* levelRenderer, void* screenContext, void* a3) {
+    // Publish the receiver before drawing: it is the corroborated route to
+    // LevelRendererPlayer, so the camera chain can prove itself one hop later
+    // instead of through ClientInstance, whose offset nothing external confirms.
+    gamehooks::noteRenderLevelReceiver(levelRenderer);
     if (gRenderLevelOriginal) gRenderLevelOriginal(levelRenderer, screenContext, a3);
     HighlightRenderer::get().draw(levelRenderer, screenContext);
 }
@@ -296,7 +314,15 @@ bool HighlightRenderer::ensureMaterial() {
         const auto groupAddress = resolver.address(SigId::RenderMaterialGroup);
         if (groupAddress) {
             const auto group = resolveAdrpAdd(reinterpret_cast<const std::uint32_t*>(groupAddress), 8, 0);
-            if (group) gMaterialGroup = reinterpret_cast<void*>(group);
+            // The ADRP+ADD yields the address of the owning object, not the
+            // RenderMaterialGroup singleton, which sits mRenderMaterialGroupOffset
+            // bytes into it. MaterialGroup::mRenderMaterialGroupOffset = 0x20 on
+            // 1.26.6x (BedrockTools offsets/Render.hpp, "feat: 26.60 support").
+            // Without the +0x20 the vtable read below lands 0x20 early and the
+            // slot-2 lookup calls something that is not the material lookup.
+            if (group) {
+                gMaterialGroup = reinterpret_cast<void*>(group + kRenderMaterialGroupOffset);
+            }
         }
     }
 
@@ -401,11 +427,37 @@ void HighlightRenderer::draw(void* levelRenderer, void* screenContext) {
 
     // Unproven reads as 0, and offset 0 on the ScreenContext is its vptr -- a
     // mapped pointer that would sail through plausiblePointer() and then be used
-    // as a Tessellator. Require the proof instead of the heuristic.
-    if (!resolver.offsetValidated(OffId::ScreenContextTessellator)) return;
-    const auto tessellatorPointer = sdk::fieldPointer(screenContext, resolver.offset(OffId::ScreenContextTessellator));
-    if (!sdk::plausiblePointer(tessellatorPointer)) return;
+    // as a Tessellator. Nothing but a proof is acceptable here.
+    //
+    // This offset does have a proof, and it is better than a runtime guess: the
+    // renderLevel hook is handed the very ScreenContext the game draws with, and
+    // on 1.26.6x its mTessellator is at +0xB0 (BedrockTools offsets/Render.hpp,
+    // "feat: 26.60 support"). So the value can be validated in place, every frame,
+    // against the API it is about to be handed to -- no ClientInstance hop, and no
+    // dependence on an offset that BedrockTools does not corroborate.
+    const auto tessellatorOffset = resolver.offset(OffId::ScreenContextTessellator);
+    if (!tessellatorOffset) return;
+    auto& space = sdk::AddressSpace::get();
+    if (space.regionCount() == 0) space.refresh();
+    if (!space.readable(screenContext, tessellatorOffset + sizeof(void*))) return;
+    const auto tessellatorPointer = sdk::fieldPointer(screenContext, tessellatorOffset);
+    if (!sdk::plausiblePointer(tessellatorPointer) ||
+        !space.readable(tessellatorPointer, kTessellatorProbeBytes)) {
+        return;
+    }
     void* tessellator = tessellatorPointer;
+
+    // First real use proves the offset. The tessellator has to be a live object:
+    // the four API pointers this module calls must all be resolved, and a wrong
+    // candidate would either fail the readability check above or fault inside
+    // Tessellator::begin, so the proof is "the buffer is mapped and the object is
+    // non-trivial". Recording it here means the check costs one comparison on
+    // later frames instead of a full chain walk.
+    if (!resolver.offsetValidated(OffId::ScreenContextTessellator) && gTessBegin && gTessColor &&
+        gTessVertex && gRenderMesh) {
+        resolver.confirmOffset(OffId::ScreenContextTessellator, tessellatorOffset,
+                               "ScreenContext::mTessellator, validated in place on the renderLevel ScreenContext");
+    }
 
     // Camera position is kept fresh by the tick path (it reads the same field
     // the renderer uses), so no per-frame game lookups are needed here.

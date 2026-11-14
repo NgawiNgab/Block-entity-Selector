@@ -14,6 +14,8 @@
 #include <cmath>
 #include <cstring>
 #include <cstdio>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -643,6 +645,62 @@ void testDiagnosticReportBuffer() {
 /// cam pos" from "this candidate points at a zeroed struct", so it is the part
 /// worth pinning. It is reproduced here because the real one lives in a lambda
 /// inside a function that needs the preloader SDK to link.
+/// Every offset in the profile is now corroborated by an external source for this
+/// exact build (BedrockTools `include/bedrocktools/sdk/offsets/*.hpp`, whose
+/// Render.hpp was last changed by "feat: 26.60 support"). That makes the table
+/// checkable for the first time: a typo, a bad merge or a "quick fix" that quietly
+/// changes one of these numbers is a defect, not a preference.
+///
+/// The values are duplicated here on purpose. A test that read them from the
+/// profile could only prove the profile is self-consistent.
+void testOffsetsMatchReference() {
+    struct Reference {
+        bes::core::OffId id;
+        std::size_t value;
+        const char* name;
+    };
+    // Source column is which BedrockTools header each came from.
+    const Reference expected[] = {
+        {bes::core::OffId::ActorStateVector, 0x228, "Actor::mStateVectorComponent"},
+        {bes::core::OffId::ActorAabbComponent, 0x230, "mStateVectorComponent + mAABBShapeComponent(8)"},
+        {bes::core::OffId::ActorLevel, 0x1F0, "Actor::mLevel"},
+        {bes::core::OffId::ActorDimension, 0x1E0, "Actor::mDimension"},
+        {bes::core::OffId::LevelActorManager, 0x478, "Level::mActorManager"},
+        {bes::core::OffId::DimensionBlockSource, 0xD0, "Dimension::mBlockSource"},
+        {bes::core::OffId::ScreenContextTessellator, 0xB0, "ScreenContext::mTessellator"},
+        {bes::core::OffId::ScreenContextColorHolder, 0x30, "ScreenContext::mColorHolder"},
+        {bes::core::OffId::LevelRendererPlayer, 0x430, "LevelRenderer::mLevelRendererPlayer"},
+        {bes::core::OffId::LevelRendererPlayerCamPos, 0x614, "LevelRendererPlayer::mCamPos"},
+    };
+
+    // Read the SHIPPED file, not the Profile singleton. Profile is process-wide and
+    // earlier tests replace its offsets, so asserting through it would check
+    // whatever the previous test left behind and silently pass. Reading the file is
+    // also the stronger claim: this is the table that actually ships.
+    std::ifstream file("resources/signatures.json");
+    CHECK(file.good());
+    const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    auto& profile = bes::core::Profile::get();
+    CHECK(profile.loadFromText(text, "resources/signatures.json", true));
+
+    for (const auto& entry : expected) {
+        const auto candidate = profile.candidates(entry.id);
+        if (candidate.empty()) {
+            CHECK(false); // A missing category is a failure, not a skip.
+            continue;
+        }
+        CHECK(candidate.front().value == entry.value);
+        // Corroboration must also be recorded, or the diagnostics cannot tell a
+        // referenced offset from one somebody guessed.
+        CHECK(!candidate.front().origin.empty());
+    }
+
+    // Actor rotation (0x238) is a literal inside World.cpp's anonymous namespace
+    // rather than a profile entry, so it cannot be asserted from here without
+    // inventing a test-only alias for it. BedrockTools agrees on the value
+    // (Actor::mActorRotationComponent = 0x238); noted rather than tested.
+}
+
 void testCameraPlausibility() {
     const auto plausible = [](float x, float y, float z) {
         if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) return false;
@@ -768,6 +826,7 @@ int main() {
     testIdentifierIndex();
     testLibcxxStringDecoding();
     testDiagnosticReportBuffer();
+    testOffsetsMatchReference();
     testCameraPlausibility();
     testAddressSpaceCapacity();
     testModulePresence();

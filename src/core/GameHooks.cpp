@@ -26,6 +26,10 @@ GetLocalPlayerFn gGetLocalPlayer = nullptr;
 
 std::atomic<void*> gClientInstance{nullptr};
 std::atomic<void*> gLocalPlayer{nullptr};
+/// The LevelRenderer the renderLevel hook was called with. The renderer latches it
+/// because the same argument is the only corroborated route to LevelRenderer: it
+/// saves walking ClientInstance through an offset nothing external confirms.
+std::atomic<void*> gLevelRenderer{nullptr};
 TickCallback gTickCallback;
 std::mutex gInstallMutex;
 bool gInstalled = false;
@@ -115,6 +119,16 @@ void* localPlayer() {
     return gLocalPlayer.load(std::memory_order_acquire);
 }
 
+void noteRenderLevelReceiver(void* levelRenderer) {
+    if (levelRenderer && sdk::plausiblePointer(levelRenderer)) {
+        gLevelRenderer.store(levelRenderer, std::memory_order_release);
+    }
+}
+
+void* renderLevelReceiver() {
+    return gLevelRenderer.load(std::memory_order_acquire);
+}
+
 bool cameraPosition(float out[3]) {
     if (!out) return false;
     const auto client = clientInstance();
@@ -149,6 +163,36 @@ bool cameraPosition(float out[3]) {
         std::memcpy(&vtable, pointer, sizeof(vtable));
         return sdk::plausiblePointer(vtable) && space.readable(vtable, sizeof(void*));
     };
+
+    // Two entry points, because one of them is not corroborated.
+    //
+    // `client_instance_level_renderer` (0x90) has no external confirmation --
+    // BedrockTools never walks ClientInstance for this, it takes the LevelRenderer
+    // straight from the renderLevel hook's first argument. `_this` here IS that
+    // argument, so when the renderer has already latched it, the chain starts one
+    // hop later and skips the only unverified offset in the path.
+    void* const hookedRenderer = renderLevelReceiver();
+    if (hookedRenderer && !resolver.offsetValidated(OffId::LevelRendererPlayer)) {
+        for (const auto& rendererCandidate : Profile::get().candidates(OffId::LevelRendererPlayer)) {
+            if (!space.readable(hookedRenderer, rendererCandidate.value + sizeof(void*))) continue;
+            void* const playerRenderer = sdk::fieldPointer(hookedRenderer, rendererCandidate.value);
+            if (!readableObject(playerRenderer)) continue;
+            for (const auto& cameraCandidate : Profile::get().candidates(OffId::LevelRendererPlayerCamPos)) {
+                if (!space.readable(playerRenderer, cameraCandidate.value + 3 * sizeof(float))) continue;
+                const auto* camera = reinterpret_cast<const float*>(
+                    static_cast<const std::byte*>(playerRenderer) + cameraCandidate.value);
+                if (!plausibleCamera(camera)) continue;
+                resolver.confirmOffset(OffId::LevelRendererPlayer, rendererCandidate.value,
+                                       std::string(rendererCandidate.origin) + " (from renderLevel argument)");
+                resolver.confirmOffset(OffId::LevelRendererPlayerCamPos, cameraCandidate.value,
+                                       std::string(cameraCandidate.origin) + " (from renderLevel argument)");
+                out[0] = camera[0];
+                out[1] = camera[1];
+                out[2] = camera[2];
+                return true;
+            }
+        }
+    }
 
     if (!resolver.offsetValidated(OffId::ClientInstanceLevelRenderer)) {
         // ClientInstance -> LevelRenderer, then LevelRenderer -> LevelRendererPlayer,
