@@ -10,6 +10,17 @@ namespace bes::core::rtti {
 /// its RTTI slots.
 bool plausibleVtable(void* const* vtable);
 
+/// Optional mapping predicate, called before the typeinfo and the name pointer
+/// are dereferenced.
+///
+/// The mod installs one backed by AddressSpace so that a garbage vptr produces
+/// an empty name instead of a fault; the host tests leave it null and work on
+/// real C++ objects. This is a hook rather than a direct AddressSpace call so
+/// Rtti.cpp keeps no dependency on the loader.
+using TypeInfoReadable = bool (*)(const void* address, std::size_t size);
+
+extern TypeInfoReadable gTypeInfoReadable;
+
 /// Returns the mangled typeinfo name ("12ZombieActor") stored in an object's
 /// vtable, or an empty string when the object has no usable RTTI.
 std::string mangledName(const void* object);

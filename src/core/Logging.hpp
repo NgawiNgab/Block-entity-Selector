@@ -1,9 +1,17 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 
 namespace bes::core {
+
+/// Monotonic milliseconds since an arbitrary epoch.
+///
+/// Lives here rather than in each translation unit because two subsystems now
+/// timestamp the same event: the picker stamps a message and the frame hook
+/// decides whether it has expired. Two independent clocks would disagree.
+std::uint64_t nowMilliseconds();
 
 /// Thin wrapper over the preloader logger so every subsystem logs under one tag.
 namespace log {

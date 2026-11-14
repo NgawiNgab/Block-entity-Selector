@@ -13,7 +13,8 @@ namespace bes::render {
 /// "rendering is broken" could not be told apart from "there was nothing to
 /// draw".
 enum class RenderStage : std::uint8_t {
-    NotInstalled,  ///< renderLevel hook never landed
+    NotYetDrawn,   ///< no frame has reached draw() yet -- says nothing about the hook
+    NotInstalled,  ///< draw() ran but the hook is no longer installed
     BadArguments,  ///< no LevelRenderer, or an implausible ScreenContext
     NoTargets,     ///< the scanner has nothing to draw -- not a render fault
     NoTessellator, ///< ScreenContext::mTessellator unproven or unreadable
@@ -24,10 +25,11 @@ enum class RenderStage : std::uint8_t {
 };
 
 /// Number of RenderStage values; `mStageCounts` is sized from this.
-inline constexpr std::size_t kRenderStageCount = 8;
+inline constexpr std::size_t kRenderStageCount = 9;
 
 inline const char* renderStageName(RenderStage stage) {
     switch (stage) {
+    case RenderStage::NotYetDrawn: return "no frame drawn yet";
     case RenderStage::NotInstalled: return "not installed";
     case RenderStage::BadArguments: return "bad arguments";
     case RenderStage::NoTargets: return "no targets";

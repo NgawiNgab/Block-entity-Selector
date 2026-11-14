@@ -103,10 +103,24 @@ mod saw the block id or actor class), bundled documented table, game registry.
 
 ## Key decisions
 
-**RTTI over offsets for entity identity.** Every polymorphic Bedrock actor has a `type_info` pointer
-two slots before its vtable. Reading `type_info + 8` gives the mangled class name — no offset table,
-no signature, no ambiguity, and it works identically on every build. The mod therefore classifies
-entities by *name* ("Zombie", "Player", "ItemActor") and never needs `Actor::getTypeNameTag`.
+**RTTI over offsets for entity identity.** Every polymorphic Bedrock actor starts with a vptr, and
+the slot *immediately before* that vtable holds the `type_info` pointer (`vtable[-1]`; `vtable[-2]`
+is offset-to-top and is zero for a primary vtable). Reading `type_info + 8` gives the mangled class
+name — no offset table, no signature, no ambiguity, and it works identically on every build. The mod
+therefore classifies entities by *name* ("Zombie", "Player", "ItemActor") and never needs
+`Actor::getTypeNameTag`.
+
+Three properties this reader must hold, each of which has failed at least once:
+
+- **The slot is `-1`.** Reading `-2` returns null for every object, which surfaces as `className()`
+  returning "" everywhere. Nothing errors; the whole offset chain merely never confirms. Because
+  every probe in `World.cpp` gates on a class name, one wrong index blocked eleven offsets.
+- **Objects must be 8-byte aligned.** A vptr sits at offset 0 of a polymorphic object, so such an
+  object is always aligned. Without that check, a smaller or int-only object is read as eight bytes
+  of "vptr" that can look aligned, and `vtable[-1]` is then read out of bounds.
+- **Typeinfo names carry no `_Z` prefix.** libc++ stores the bare mangling, sometimes with a leading
+  `*` for internal-linkage types, so the parser strips those itself rather than going through
+  `__cxa_demangle`.
 
 **Typeinfo names are parsed, not demangled.** `__cxa_demangle` rejects bare typeinfo names (they are
 not unambiguous mangled symbols, so nested and template forms return `-2`). `src/core/Rtti.cpp`

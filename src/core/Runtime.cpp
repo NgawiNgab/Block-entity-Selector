@@ -8,6 +8,8 @@
 #include "core/Logging.hpp"
 #include "core/Profile.hpp"
 #include "core/Resolver.hpp"
+#include "core/Rtti.hpp"
+#include "launcher/HudNotice.hpp"
 #include "launcher/Picker.hpp"
 #include "modules/SelectorModule.hpp"
 #include "render/HighlightRenderer.hpp"
@@ -51,11 +53,6 @@ using SwapBuffersFn = unsigned int (*)(void*, void*);
 
 SwapBuffersFn gSwapBuffersOriginal = nullptr;
 pl::memory::HookHandle gSwapBuffersHook;
-
-std::uint64_t nowMilliseconds() {
-    using namespace std::chrono;
-    return static_cast<std::uint64_t>(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
-}
 
 } // namespace
 
@@ -106,6 +103,18 @@ bool Runtime::prepareGame() {
     // whole block (~40 lines) into every dump. resolveAll() itself logs the
     // one-line outcome that the log genuinely needs.
     world::World::get().installBlockLookup();
+
+    // RTTI reads dereference a vptr and the typeinfo it points at. Back that with
+    // the memory map so a wrong object yields an empty name rather than a fault:
+    // every offset probe in World.cpp now gates on a class name, so this is on
+    // the path of a candidate being rejected, which is exactly where bad pointers
+    // arrive.
+    rtti::gTypeInfoReadable = [](const void* address, std::size_t size) {
+        auto& space = sdk::AddressSpace::get();
+        if (space.regionCount() == 0) space.refresh();
+        return space.readable(address, size);
+    };
+
     const bool hooksInstalled = installHooks();
     // Only claim to be installed when the per-tick hook actually landed. A wrong
     // flag here hides the single most consequential failure in the whole mod.
@@ -298,7 +307,17 @@ void Runtime::onFrame() {
     // The frame hook is the surviving driver: it runs on one thread, it is the
     // frame the highlight is drawn against, and it keeps ticking while the game is
     // paused, which the update hook does not.
-    if (!mEnabled || !mLastPlayer) return;
+    // The HUD notice is driven from the frame hook, not from the tick below it.
+    // The launcher's draw-command list is per-frame state, and this hook runs on
+    // the thread the overlay is composited on, so text submitted here lands in the
+    // frame it was submitted for. Gating it behind `mEnabled` would also mean a
+    // disabled module could never explain itself.
+    if (!mLastPlayer) return;
+
+    const auto now = nowMilliseconds();
+    launcher::HudNotice::get().poll(modules::SelectorModule::get().moduleId(), now);
+
+    if (!mEnabled) return;
 
     // Sample the camera here, on the frame being drawn. `cameraPosition()` is the
     // only consumer of the ClientInstance -> LevelRenderer -> LevelRendererPlayer
@@ -307,7 +326,7 @@ void Runtime::onFrame() {
     // falls back to the player's eye position, which is correct in first person.
     float camera[3]{};
     const bool hasCamera = gamehooks::cameraPosition(camera);
-    modules::SelectorModule::get().onTick(mLastPlayer, nowMilliseconds(),
+    modules::SelectorModule::get().onTick(mLastPlayer, now,
                                          hasCamera ? bes::sdk::Vec3{camera[0], camera[1], camera[2]}
                                                    : bes::sdk::Vec3{});
 }
@@ -366,6 +385,18 @@ std::string Runtime::dumpDiagnostics() {
                                resolver.offsetValidated(OffId::ScreenContextColorHolder) &&
                                resolver.offsetValidated(OffId::LevelRendererPlayer) &&
                                resolver.offsetValidated(OffId::LevelRendererPlayerCamPos);
+        // RTTI is the gate every offset probe passes through: level, dimension,
+        // actor-manager and every entity's class name all come from it. When it
+        // stops working nothing reports an error -- the probes simply never
+        // confirm -- so the fact that the reader can see a live class at all is
+        // worth stating outright.
+        const auto playerForRtti = mLastPlayer;
+        const auto playerClass = playerForRtti ? rtti::className(playerForRtti) : std::string{};
+        report << "   rtti read:        "
+               << (playerForRtti ? (playerClass.empty() ? "FAILED (no class name from the local player)"
+                                                      : "ok (" + playerClass + ")")
+                                 : std::string("no local player yet"))
+               << '\n';
         report << "   blocked:          ";
         if (actorsReady && blocksReady && drawReady) {
             report << "nothing -- all three goals have their offsets\n";

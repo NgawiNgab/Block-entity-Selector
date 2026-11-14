@@ -116,8 +116,10 @@ Checklist:
      step 4 instead.
    - `no tessellator` / `no camera` / `no material` — a real rendering fault, and the stage names
      which link broke.
-   - `not installed` / `bad arguments` — the hook never landed or was called with a bad
-     `ScreenContext`.
+   - `no frame drawn yet` — nothing has reached the renderer since startup. This is the
+     initial state and says nothing about the hook; `renderer installed` answers that.
+   - `not installed` / `bad arguments` — the hook landed but `draw()` was called without a
+     usable `ScreenContext`, or the hook was removed after installing.
    - `renderer error` carries the resolver's message when one is set.
 4. `matches: N block(s)` is non-zero when you are standing on the selected block. If it stays at
    zero after a full pass, the block pipeline is not seeing your dimension.
@@ -129,6 +131,10 @@ To test drawing without selecting anything, press **Debug: Render Test Box**. It
 the player's feet on the next frame, through the same path a real highlight uses. If the box
 appears, the tessellator, material, camera and depth handling are all correct and any remaining
 problem is in the scan or the selection; if it does not, `renderer stage` names the broken link.
+
+Both the Select button and the render test now report on screen for a few seconds, because a
+button that fails silently is indistinguishable from a button that was never wired up. The Select
+button cycles entity -> block -> clear and says which one it picked, or why it could not.
 
 ---
 

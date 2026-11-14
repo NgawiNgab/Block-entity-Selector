@@ -1,6 +1,7 @@
 #include "launcher/Picker.hpp"
 
 #include "core/Logging.hpp"
+#include "launcher/HudNotice.hpp"
 #include "core/Runtime.hpp"
 #include "modules/SelectorModule.hpp"
 #include "selection/Scanner.hpp"
@@ -108,17 +109,41 @@ std::string Picker::pickBlockAtFeet() {
 }
 
 void Picker::pickUnderCrosshair() {
+    const auto now = core::nowMilliseconds();
     auto& selector = modules::SelectorModule::get();
+
+    // Every tap now ends in a visible message. The old version returned silently
+    // on each failure path, so a tap that did nothing was indistinguishable from a
+    // button that was never wired up -- which is exactly how it was reported.
     if (!selector.enabled()) {
         core::log::info("picker: module is off, enabling it");
         selector.setEnabled(true);
         // Reflect the change in the launcher's toggle, which the picker changed
         // outside of the menu.
         pl::modmenu::setModuleEnabled(selector.moduleId(), true);
+        launcher::HudNotice::get().show("Selector enabled", now);
     }
 
     auto& selection = selection::Selection::get();
     const selection::Target current = selection.current();
+
+    // A pick is only possible against a live world snapshot. Say so explicitly:
+    // the reason is almost always an unproven offset, not a missing world, and
+    // naming the blocker is what turns "nothing happens" into a next step.
+    const auto snapshot = world::World::get().snapshot();
+    if (!snapshot.valid) {
+        launcher::HudNotice::get().show("No world data yet - see Diagnostics", now);
+        if (!mLoggedNoSnapshot) {
+            mLoggedNoSnapshot = true;
+            core::log::warn("picker: no world snapshot yet -- the game hook is not ticking "
+                            "or an offset is unproven (see the diagnostics dump: 'startup' section)");
+        }
+        return;
+    }
+    if (mLoggedNoSnapshot) {
+        mLoggedNoSnapshot = false;
+        core::log::info("picker: world snapshot is now available");
+    }
 
     const auto entityClass = pickEntityAtCrosshair();
     const auto blockId = pickBlockAtFeet();
@@ -129,6 +154,7 @@ void Picker::pickUnderCrosshair() {
         selection.selectEntityFromClass(entityClass);
         selection::Scanner::get().reset();
         core::log::info("picker: entity " + entityClass);
+        launcher::HudNotice::get().show(entityClass + " selected", now);
         return;
     }
 
@@ -136,6 +162,7 @@ void Picker::pickUnderCrosshair() {
         selection.selectBlock(blockId);
         selection::Scanner::get().reset();
         core::log::info("picker: block " + blockId);
+        launcher::HudNotice::get().show(blockId + " selected", now);
         return;
     }
 
@@ -143,33 +170,28 @@ void Picker::pickUnderCrosshair() {
         selection.clear();
         selection::Scanner::get().reset();
         core::log::info("picker: selection cleared");
+        launcher::HudNotice::get().show("Selection cleared", now);
         return;
     }
 
-    // Nothing to pick and nothing to clear. This is the "the button does nothing"
-    // report, so name the reason instead of exiting silently: without a live
-    // snapshot there is no player, and without a player the picker cannot see the
-    // world at all.
-    const auto snapshot = world::World::get().snapshot();
-    if (!snapshot.valid) {
-        // Once per state change, not once per tap: the condition is either true
-        // for a run of taps or it is not, and repeating it buries the startup
-        // lines that explain why.
-        if (!mLoggedNoSnapshot) {
-            mLoggedNoSnapshot = true;
-            core::log::warn("picker: no world snapshot yet -- the game hook is not ticking "
-                            "(see the diagnostics dump: 'startup' section)");
-        }
-        return;
-    }
-
-    // A working snapshot means the previous warning no longer applies, so the
-    // next failure starts a fresh run of logging.
-    if (mLoggedNoSnapshot) {
-        mLoggedNoSnapshot = false;
-        core::log::info("picker: world snapshot is now available");
+    // Nothing under the crosshair and nothing at the feet. Distinguish the two
+    // reasons rather than printing one sentence for both: an empty entity list can
+    // mean no actors are loaded, while a broken block lookup means the block half
+    // of the mod has no path at all.
+    const bool entityPipeline = world::World::get().entityPipelineReady();
+    const bool blockPipeline = world::World::get().blockPipelineReady();
+    std::string reason = "Nothing to select here";
+    if (!entityPipeline && !blockPipeline) {
+        reason = "No entity or block access yet - see Diagnostics";
+    } else if (!blockPipeline) {
+        reason = "No block access yet - see Diagnostics";
+    } else if (!entityPipeline) {
+        reason = "No entity access yet - see Diagnostics";
+    } else if (snapshot.blockSource == nullptr) {
+        reason = "Block source not resolved - see Diagnostics";
     }
     core::log::info("picker: nothing under the crosshair or at the player's feet");
+    launcher::HudNotice::get().show(std::move(reason), now);
 }
 
 } // namespace bes::launcher

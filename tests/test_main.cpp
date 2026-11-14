@@ -20,6 +20,27 @@
 #include <string>
 #include <vector>
 
+/// Test doubles for the RTTI reader, deliberately at file scope (external
+/// linkage) rather than inside the anonymous namespace below. A type with internal
+/// linkage gets a leading '*' on its typeinfo name, which is a different parse
+/// path from every class in the game; keeping these external tests the path the
+/// game actually uses. Both forms are covered separately.
+namespace rtti_fixture {
+struct Shape {
+    virtual ~Shape() = default;
+    virtual int sides() const { return 0; }
+};
+struct Triangle : Shape {
+    int sides() const override { return 3; }
+};
+struct Level {};
+struct LevelRenderer : Shape {};
+struct Actor {
+    virtual ~Actor() = default;
+};
+struct ZombieActor : Actor {};
+} // namespace rtti_fixture
+
 namespace {
 
 int gChecks = 0;
@@ -116,6 +137,64 @@ void testRttiNames() {
 
     CHECK(std::string(kindName(ActorKind::Mob)) == "mob");
     CHECK(std::string(kindName(ActorKind::Projectile)) == "projectile");
+}
+
+/// Reads a class name out of a REAL polymorphic object.
+///
+/// This is the test that was missing. `testRttiNames()` only exercises the string
+/// parser, so it passed happily while `className()` returned "" for every object
+/// in the game -- and every offset probe in World.cpp gates on a class name, so
+/// nothing was ever confirmed. The defect was a single vtable index: typeinfo
+/// lives at vtable[-1] (Itanium), and the reader looked at vtable[-2], which is
+/// offset-to-top and zero for every primary vtable.
+///
+/// Testing against actual objects is the only way to catch that: the index is not
+/// visible in any string the parser is given.
+
+
+void testRttiOnRealObjects() {
+    using namespace bes::core::rtti;
+    using namespace rtti_fixture;
+
+    Triangle triangle;
+    ZombieActor zombie;
+    LevelRenderer renderer;
+
+    // A non-empty name is the whole point: empty was the bug.
+    CHECK(!className(&triangle).empty());
+    CHECK(!className(&zombie).empty());
+    CHECK(!className(&renderer).empty());
+
+    // ...and it has to be the RIGHT name, not just any bytes at that offset.
+    CHECK(className(&triangle) == "Triangle");
+    CHECK(className(&zombie) == "ZombieActor");
+    CHECK(className(&renderer) == "LevelRenderer");
+
+    // The mangled forms must differ, or the two reads above could be luck.
+    CHECK(mangledName(&zombie) != mangledName(&renderer));
+
+    // The gates that World.cpp actually relies on. These were unreachable while
+    // className() was empty, which is exactly why the offset chain never proved
+    // itself.
+    const auto levelLike = className(&renderer);
+    CHECK(levelLike.find("Level") != std::string::npos);
+    CHECK(levelLike.find("Renderer") != std::string::npos); // the negative filter
+    CHECK(className(&zombie).find("Level") == std::string::npos);
+
+    // A non-polymorphic object has no vtable at all and must report empty rather
+    // than reading whatever follows it.
+    Level plain{};
+    CHECK(className(&plain).empty());
+    CHECK(className(nullptr).empty());
+
+    // Register classes survive the round trip, since that is how the game's own
+    // nested names arrive.
+    CHECK(classNameFromMangled("N4game13LevelRendererE") == "LevelRenderer");
+
+    // The compiler prefixes a leading '*' on internal-linkage types. The game has
+    // none, but the previous version of this test did, and the empty result looked
+    // exactly like "this object has no RTTI".
+    CHECK(classNameFromMangled("*N12_GLOBAL__N_112rtti_fixture8TriangleE") == "Triangle");
 }
 
 void testProfileParsing() {
@@ -643,9 +722,9 @@ void testRenderStageNames() {
     const auto stageName = &bes::render::renderStageName;
 
     // Every stage must have a distinct, non-empty name.
-    const Stage all[] = {Stage::NotInstalled, Stage::BadArguments, Stage::NoTargets,
-                         Stage::NoTessellator, Stage::NoCamera,     Stage::NoMaterial,
-                         Stage::EmptyGeometry, Stage::Drew};
+    const Stage all[] = {Stage::NotYetDrawn,   Stage::NotInstalled,  Stage::BadArguments,
+                         Stage::NoTargets,     Stage::NoTessellator, Stage::NoCamera,
+                         Stage::NoMaterial,    Stage::EmptyGeometry, Stage::Drew};
     // Pins the count to the list above; a new enumerator must be added in both
     // places or this fails rather than going untested.
     CHECK(std::size(all) == bes::render::kRenderStageCount);
@@ -667,6 +746,12 @@ void testRenderStageNames() {
     // The two states a user most needs told apart.
     CHECK(std::string(stageName(Stage::NoTargets)) == "no targets");
     CHECK(std::string(stageName(Stage::Drew)) == "drew");
+
+    // "Nothing has been drawn yet" must not read as "the hook is missing". The
+    // dump prints `renderer installed: yes` above the stage, so a stage of
+    // "not installed" before the first frame was a contradiction in the report.
+    CHECK(std::string(stageName(Stage::NotYetDrawn)) != stageName(Stage::NotInstalled));
+    CHECK(std::string(stageName(Stage::NotYetDrawn)) == "no frame drawn yet");
 }
 
 /// Every offset in the profile is now corroborated by an external source for this
@@ -694,6 +779,9 @@ void testOffsetsMatchReference() {
         {bes::core::OffId::DimensionBlockSource, 0xD0, "Dimension::mBlockSource"},
         {bes::core::OffId::ScreenContextTessellator, 0xB0, "ScreenContext::mTessellator"},
         {bes::core::OffId::ScreenContextColorHolder, 0x30, "ScreenContext::mColorHolder"},
+        // Was 0x90 with no external confirmation; BedrockTools Core.hpp says 0x1B8
+        // for 26.60. Pinned here so a "quick fix" back to the old guess fails.
+        {bes::core::OffId::ClientInstanceLevelRenderer, 0x1B8, "ClientInstance::mLevelRenderer"},
         {bes::core::OffId::LevelRendererPlayer, 0x430, "LevelRenderer::mLevelRendererPlayer"},
         {bes::core::OffId::LevelRendererPlayerCamPos, 0x614, "LevelRendererPlayer::mCamPos"},
     };
@@ -855,6 +943,7 @@ int main() {
     testAabb();
     testColor();
     testRttiNames();
+    testRttiOnRealObjects();
     testProfileParsing();
     testVtableCandidates();
     testOffsetsAreSane();

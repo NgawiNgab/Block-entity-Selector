@@ -450,14 +450,29 @@ void HighlightRenderer::draw(void* levelRenderer, void* screenContext) {
 
     // A self-test draws one box around the player regardless of what is selected,
     // so "does the drawing path work at all" is answerable without a target.
+    //
+    // It used to require a valid world snapshot, which made it useless exactly
+    // when it was needed: the snapshot is the first thing a broken offset chain
+    // takes down, so the test reported "enter a world first" while the user was
+    // standing in a world. The camera position is enough to place a box, and the
+    // camera arrives from the renderLevel hook's own receiver, one hop from the
+    // ScreenContext this call already trusts.
     if (mPendingSelfTest.exchange(false, std::memory_order_acq_rel)) {
-        const auto snapshot = world::World::get().snapshot();
-        if (snapshot.valid) {
-            const auto& feet = snapshot.playerPosition;
-            targets.blocks.push_back(bes::sdk::BlockPos::fromCorner(feet));
+        auto position = world::World::get().snapshot().cameraPosition;
+        if (!position.finite() || position.lengthSquared() < 1.f) {
+            float camera[3]{};
+            if (gamehooks::cameraPosition(camera)) {
+                position = {camera[0], camera[1], camera[2]};
+            }
+        }
+        if (position.finite() && position.lengthSquared() >= 1.f) {
+            // Drop to the ground so the box is not floating at eye height.
+            position.y -= 1.62f;
+            targets.blocks.push_back(bes::sdk::BlockPos::fromCorner(position));
             core::log::info("renderer: self-test emitting one box at the player's feet");
         } else {
-            core::log::warn("renderer: self-test needs a valid world snapshot; enter a world first");
+            noteStage(RenderStage::NoCamera);
+            return;
         }
     }
 

@@ -10,9 +10,19 @@
 namespace bes::core::rtti {
 namespace {
 
-/// Itanium ABI: vtable[-1] is offset-to-top, vtable[-2] points at std::type_info.
-/// The type name itself sits at a fixed offset inside type_info for libc++.
-constexpr std::ptrdiff_t kTypeInfoSlot = -2;
+/// Itanium C++ ABI vtable layout, low address to high:
+///
+///   vtable[-2]  offset-to-top        (0 for a primary vtable)
+///   vtable[-1]  address of typeinfo  <- this is the one
+///   vtable[0]   first virtual function
+///
+/// This was -2, which reads offset-to-top. That is zero for every primary
+/// vtable, so `rawName()` bailed out at the null check and `className()`
+/// returned "" for every object in the game. Nothing failed loudly: every RTTI
+/// gate in World.cpp simply never passed, which is why `offsets proven` sat at
+/// 0/11 with the whole chain blocked and no error anywhere to explain it.
+constexpr std::ptrdiff_t kTypeInfoSlot = -1;
+/// std::type_info::__type_name in libc++ (a const char*).
 constexpr std::size_t kTypeInfoNameOffset = 8;
 
 /// Reads one length-prefixed identifier, e.g. "6Zombie" -> "Zombie".
@@ -87,6 +97,14 @@ std::string parseTypeinfoName(std::string_view mangled) {
     if (mangled.starts_with("_ZTS")) mangled.remove_prefix(4);
     else if (mangled.starts_with("_Z")) mangled.remove_prefix(2);
 
+    // A leading '*' marks a type with internal linkage (applied by the compiler
+    // to keep the name from being merged across translation units), so
+    // "N12_GLOBAL__N_112rtti_fixture8TriangleE" arrives as
+    // "*N12_GLOBAL__N_112rtti_fixture8TriangleE". Without this the first character
+    // is neither a digit nor 'N', every parse fails, and the class reports as
+    // nameless -- which then reads as "no RTTI" rather than "unparsed".
+    if (mangled.starts_with("*")) mangled.remove_prefix(1);
+
     const std::string text(mangled);
     std::size_t position = 0;
     if (text.empty()) return {};
@@ -107,17 +125,52 @@ std::string parseTypeinfoName(std::string_view mangled) {
 
 std::string_view rawName(const void* object) {
     if (!object) return {};
+
+    // A polymorphic object stores its vptr at offset 0, so the object itself is
+    // always 8-byte aligned. Without this check a one-byte or int-only object --
+    // or any interior pointer -- is read as eight bytes of "vptr" that may happen
+    // to look aligned, and then vtable[-1] is read from an address nowhere near a
+    // vtable. That is an out-of-bounds read, not a failed guess.
+    if ((reinterpret_cast<std::uintptr_t>(object) & 0x7) != 0) return {};
+
     void* const* vtable = *reinterpret_cast<void* const* const*>(object);
     if (!plausibleVtable(vtable)) return {};
+
     const auto* typeInfo = reinterpret_cast<const std::uintptr_t*>(vtable[kTypeInfoSlot]);
     if (!typeInfo) return {};
-    const auto namePointer = *reinterpret_cast<const char* const*>(
-        reinterpret_cast<const std::byte*>(typeInfo) + kTypeInfoNameOffset);
+
+    // A game object can be reached with a plausible vptr whose typeinfo slot
+    // holds something that is not a typeinfo at all -- a wrong object, a
+    // partially initialised one, or an unrelated struct that happens to start
+    // with a code pointer. Both the typeinfo and its name field are dereferenced
+    // below, so both are checked first; an unchecked read here faults the game
+    // on data we chose to trust. When no predicate is installed (host tests) the
+    // check is skipped and the caller is operating on real C++ objects.
+    const auto readable = [](const void* address, std::size_t size) {
+        if (gTypeInfoReadable && !gTypeInfoReadable(address, size)) return false;
+        return true;
+    };
+    if (!readable(typeInfo, kTypeInfoNameOffset + sizeof(void*))) return {};
+
+    const auto nameOffset = reinterpret_cast<const std::byte*>(typeInfo) + kTypeInfoNameOffset;
+    if (!readable(nameOffset, sizeof(void*))) return {};
+    const auto namePointer = *reinterpret_cast<const char* const*>(nameOffset);
     if (!namePointer) return {};
+    // One byte is all that decides between "" and a readable name, and a bad
+    // pointer is far more likely than an empty typeinfo name.
+    if (!readable(namePointer, 1)) return {};
     return std::string_view(namePointer);
 }
 
 } // namespace
+
+/// Zero unless the runtime installs the address-space-backed predicate.
+///
+/// Defined here, at namespace scope, rather than inside the anonymous namespace
+/// above: internal linkage there would leave the extern declaration in the header
+/// permanently unresolved. The link error is the only symptom, and it appears at
+/// the very end of a build rather than at the point of the mistake.
+TypeInfoReadable gTypeInfoReadable = nullptr;
 
 bool plausibleVtable(void* const* vtable) {
     const auto value = reinterpret_cast<std::uintptr_t>(vtable);

@@ -97,7 +97,11 @@ private:
     /// render thread, read from the UI thread via the dump.
     mutable std::mutex mStageMutex;
     std::uint64_t mStageCounts[kRenderStageCount]{};
-    RenderStage mLastStage = RenderStage::NotInstalled;
+    /// NotYetDrawn, not NotInstalled: until a frame arrives, nothing is known
+    /// about whether the hook fires. Reporting "not installed" here made the dump
+    /// print `renderer installed: yes` directly above `renderer stage: not
+    /// installed`, which is a contradiction the reader cannot resolve.
+    RenderStage mLastStage = RenderStage::NotYetDrawn;
 
     /// Set by selfTest(); consumed by the next draw() so the test box goes through
     /// exactly the same path as a real highlight rather than a parallel one.
