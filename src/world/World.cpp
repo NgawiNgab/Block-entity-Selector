@@ -5,6 +5,7 @@
 #include "core/Rtti.hpp"
 
 #include <bes/sdk/AddressSpace.hpp>
+#include <bes/sdk/LibcxxString.hpp>
 #include <bes/sdk/Memory.hpp>
 
 #include <algorithm>
@@ -53,15 +54,27 @@ bool looksLikeIdentifier(const std::string& text) {
 }
 
 /// Reads a std::string at an address only if it looks like a namespace-qualified id.
+///
+/// The size is NOT the raw first byte. libc++ selects between two forms with the
+/// low bit: small-string stores `size << 1` in byte 0, long-string stores
+/// `(size << 1) | 1` and keeps {size, pointer} at +8. Reading byte 0 as the size
+/// happens to work for a few short names and silently mangles everything else,
+/// which is the worst possible failure for a block identifier -- "stone" would
+/// come back as a half-length prefix rather than as an error. sdk::LibcxxString
+/// already implements this correctly, so the duplicate is gone.
 std::string readIdentifier(std::uintptr_t address) {
     if (address < 0x1000) return {};
-    auto* const raw = reinterpret_cast<const char*>(address);
-    // libc++ std::string with SSO: size at +0, bytes inline at +1.
-    const auto size = static_cast<std::size_t>(*reinterpret_cast<const std::uint8_t*>(raw));
-    if (size >= 2 && size <= 64) {
-        std::string candidate(raw + 1, size);
-        if (looksLikeIdentifier(candidate)) return candidate;
-    }
+    auto& space = sdk::AddressSpace::get();
+    if (space.regionCount() == 0) space.refresh();
+    // The caller may hand this any candidate offset, so the address itself is
+    // checked before the reader dereferences it.
+    if (!space.readable(reinterpret_cast<const void*>(address), 24)) return {};
+    const auto candidate = sdk::readLibcxxString(reinterpret_cast<const void*>(address), 64,
+                                                 [&space](std::uintptr_t value) {
+                                                     return space.readable(
+                                                         reinterpret_cast<const void*>(value), 1);
+                                                 });
+    if (looksLikeIdentifier(candidate)) return candidate;
     return {};
 }
 
@@ -345,6 +358,19 @@ void World::probeActorLevelAndDimension(void* localPlayer) {
                 if (!space.readable(level, candidate.value + sizeof(void*))) continue;
                 void* const manager = sdk::fieldPointer(level, candidate.value);
                 if (!readableObject(manager)) continue;
+                // `manager` is an ActorManager, NOT a Level: BedrockTools reaches
+                // it as Level + Level::mActorManager and passes it straight to
+                // getRuntimeActorList, so a class-name check for "Level" here would
+                // reject the correct object.
+                //
+                // What makes the call survivable is the two things already
+                // established above: `level` was RTTI-confirmed as a Level (the
+                // ActorLevel offset is validated before this block runs), and the
+                // offset being probed is corroborated by BedrockTools for this
+                // build. A wrong *candidate* is the residual risk, and it is caught
+                // by the post-call check below rather than by trusting the pointer.
+                // Tightening this further needs the ActorManager RTTI name, which
+                // is currently unverified -- see the Zaphkiel request.
                 std::vector<void*> list;
                 try {
                     list = gGetActorList(manager);
@@ -394,6 +420,10 @@ std::vector<ActorEntry> World::actors() {
     if (!resolver.offsetValidated(OffId::LevelActorManager)) return result;
     const auto actorManager = sdk::fieldPointer(snapshot.level, resolver.offset(OffId::LevelActorManager));
     if (!sdk::plausiblePointer(actorManager)) return result;
+    // The offset is proven, but the object it points at is read once more here and
+    // then handed to game code: a Level that has since been torn down, or a field
+    // that changed meaning, would fault inside getRuntimeActorList.
+    if (!sdk::AddressSpace::get().hasVtableSlot0(actorManager, 0)) return result;
 
     std::vector<void*> list;
     try {

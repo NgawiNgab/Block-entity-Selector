@@ -6,6 +6,7 @@
 #include "core/Resolver.hpp"
 #include "core/Runtime.hpp"
 #include "selection/Identifier.hpp"
+#include "launcher/HudNotice.hpp"
 #include "render/HighlightRenderer.hpp"
 #include "selection/Scanner.hpp"
 #include "world/World.hpp"
@@ -395,7 +396,17 @@ void SelectorModule::onConfigChanged(std::string_view key, std::string_view valu
         diag::BlockTypeProbe::get().dumpNearPlayer();
         return;
     } else if (key == "renderSelfTest") {
-        render::HighlightRenderer::get().selfTest();
+        // Report the outcome on screen. The renderer records the reason it stopped
+        // as a RenderStage, so the notice can name it instead of the button
+        // appearing to swallow the tap.
+        const bool armed = render::HighlightRenderer::get().selfTest();
+        if (!armed) {
+            launcher::HudNotice::get().show(
+                std::string("Render test: ") + render::HighlightRenderer::get().lastError(),
+                core::nowMilliseconds());
+        } else {
+            launcher::HudNotice::get().show("Render test armed - watch for a box", core::nowMilliseconds());
+        }
         return;
     } else {
         return;

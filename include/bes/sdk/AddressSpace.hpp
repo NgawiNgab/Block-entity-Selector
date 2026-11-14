@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <string_view>
 
@@ -89,6 +90,30 @@ public:
     /// 340 MB game image, and being incomplete is the failure mode that costs
     /// days.
     static constexpr std::size_t kMaxRegions = 16384;
+
+    /// True when `object` is a live polymorphic object whose vtable is one of
+    /// `expectedVtable`'s (slot 0).
+    ///
+    /// This is the difference between "the pointer is mapped" and "the pointer is
+    /// the object I think it is". A pointer that merely lands in a readable region
+    /// can still be a std::string body, a float field, or the interior of a
+    /// different struct; passing one of those to a game function is a jump through
+    /// whatever happens to be at its first word. Every call site that hands a
+    /// pointer to game code -- rather than only reading a field out of it -- needs
+    /// this check, not `readable`.
+    ///
+    /// Returns true when `expectedVtable` is 0: that means the caller has no
+    /// reference function resolved, and the check degrades to the mapping test
+    /// rather than silently rejecting everything.
+    bool hasVtableSlot0(const void* object, std::uintptr_t expectedVtable) const {
+        if (!object) return false;
+        if (!readable(object, sizeof(void*))) return false;
+        void* vtable = nullptr;
+        std::memcpy(&vtable, object, sizeof(vtable));
+        if (vtable == nullptr) return false;
+        if (expectedVtable == 0) return readable(vtable, sizeof(void*));
+        return reinterpret_cast<std::uintptr_t>(vtable) == expectedVtable;
+    }
 
 private:
     AddressSpace() = default;

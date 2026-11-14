@@ -137,17 +137,14 @@
     "client_instance_level_renderer": {
       "candidates": [
         {
+          "offset": "0x1B8",
+          "note": "ClientInstance::mLevelRenderer",
+          "origin": "ClientInstance::mLevelRenderer \u2014 matches BedrockTools offsets/Core.hpp (26.60). Replaces 0x90/0x88/0xA0, none of which any external source confirmed; 0x90 was already labelled uncorroborated and is what made the camera chain untrustworthy."
+        },
+        {
           "offset": "0x90",
-          "note": "ClientInstance::mLevelRenderer (candidate; validated by a readable vtable)",
-          "origin": "ClientInstance::mLevelRenderer \u2014 NOT corroborated: BedrockTools reaches LevelRenderer from the renderLevel hook argument instead"
-        },
-        {
-          "offset": "0x88",
-          "note": "fallback"
-        },
-        {
-          "offset": "0xA0",
-          "note": "fallback"
+          "note": "previous primary (uncorroborated); kept last as a fallback",
+          "origin": "unconfirmed \u2014 BedrockTools reaches LevelRenderer from the renderLevel hook argument instead of walking ClientInstance"
         }
       ]
     },

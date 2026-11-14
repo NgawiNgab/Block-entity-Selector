@@ -4,8 +4,19 @@
 
 #include <pl/Logger.hpp>
 
+#include <chrono>
 #include <mutex>
 #include <string>
+
+namespace bes::core {
+
+std::uint64_t nowMilliseconds() {
+    using namespace std::chrono;
+    return static_cast<std::uint64_t>(
+        duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
+}
+
+} // namespace bes::core
 
 namespace bes::core::log {
 namespace {
