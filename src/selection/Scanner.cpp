@@ -98,15 +98,10 @@ void Scanner::scanEntities(const world::Snapshot& snapshot, const Target& target
     }
 
     auto& world = world::World::get();
-    if (!world.entityPipelineReady()) {
-        // Only report once per session; the diagnostic dump carries the detail.
-        static bool warned = false;
-        if (!warned) {
-            warned = true;
-            bes::core::log::warn("scanner: actor_manager_list unresolved, entity highlighting disabled");
-        }
-        return;
-    }
+    // entityPipelineReady() only reports whether the actor-list signature resolved,
+    // which it does. The real gate is Level::mActorManager being proven, and
+    // World::actors() returns nothing until it is.
+    if (!world.entityPipelineReady()) return;
     const auto actors = world.actors();
 
     std::vector<bes::sdk::AABB> boxes;
@@ -158,14 +153,13 @@ std::size_t Scanner::scanBlocks(const world::Snapshot& snapshot, const Target& t
     if (!settings.scanBlocks) return 0;
 
     auto& world = world::World::get();
-    if (!world.blockPipelineReady()) {
-        static bool warned = false;
-        if (!warned) {
-            warned = true;
-            bes::core::log::warn("scanner: block_source_get_block unresolved, block highlighting disabled");
-        }
-        return 0;
-    }
+    // Note what is NOT checked here: whether block_source_get_block resolved.
+    // That signature is one of the 13 that do resolve, so a "signature missing"
+    // warning would be false. Block scanning is gated on the block source pointer,
+    // which only exists once Actor::mLevel, Actor::mDimension and
+    // Dimension::mBlockSource have been PROVEN on a live object. Until then there
+    // is genuinely nothing to scan, and the diagnostics dump reports which of the
+    // two reasons applies ("offsets proven: n/11").
     void* blockSource = world.currentBlockSource();
     if (!blockSource) return 0;
 

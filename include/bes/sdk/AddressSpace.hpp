@@ -68,7 +68,27 @@ public:
     /// file-backed mapping.
     std::size_t fileBackedRegionCount() const;
 
-    static constexpr std::size_t kMaxRegions = 4096;
+    /// True when the last refresh stopped at the region cap.
+    ///
+    /// A truncated map does not fail loudly: every region past the cut simply
+    /// reads as unmapped, so every guarded check on it answers "not readable" and
+    /// the probes quietly reject correct candidates forever. Callers that see this
+    /// must treat a negative answer as "unknown", not as "no".
+    bool truncated() const noexcept { return mTruncated; }
+
+    /// Region capacity.
+    ///
+    /// This was 4096, and a real Minecraft process maps **6022** regions (measured
+    /// from the 2026-11-13 tombstone). The library's own mappings land well past
+    /// the cut, which is why every offset probe reported "unreadable" and the
+    /// diagnostics read `offsets proven: 0/11`.
+    ///
+    /// Regions beyond the lowest library mapping would still be invisible, so the
+    /// buffer is sized for the whole map rather than for what fits comfortably: at
+    /// 64 bytes per region this is 1 MiB of BSS, which is nothing next to the
+    /// 340 MB game image, and being incomplete is the failure mode that costs
+    /// days.
+    static constexpr std::size_t kMaxRegions = 16384;
 
 private:
     AddressSpace() = default;
@@ -83,6 +103,7 @@ private:
     Region mRegions[kMaxRegions]{};
     std::size_t mCount = 0;
     bool mLoaded = false;
+    bool mTruncated = false;
 };
 
 } // namespace bes::sdk

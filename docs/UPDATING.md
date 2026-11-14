@@ -100,7 +100,7 @@ Open the module menu → **Dump Diagnostics**. The report is written to
 - the active profile (source, game version, candidate counts)
 - every resolved signature with the winning candidate's origin
 - every offset with the evidence that confirmed it
-- renderer state (installed, frames drawn, last vertex count)
+- renderer state (installed, frames drawn, last vertex count, last stage, last error)
 - the live scan settings and how many block/entity matches are currently held
 - the actor classes that actually matched the selection (for entity targets)
 - the current selection and a rolling log
@@ -108,12 +108,27 @@ Open the module menu → **Dump Diagnostics**. The report is written to
 Checklist:
 
 1. `client_instance_update` and `render_level` resolve → the mod can run at all.
-2. `renderer installed: yes` and `renderer frames` keeps increasing.
-3. `matches: N block(s)` is non-zero when you are standing on the selected block. If it stays at
+2. `renderer installed: yes`.
+3. `renderer stage` says where the last draw attempt stopped. A rising `renderer frames` means
+   geometry reached the tessellator; `frames` staying at 0 is only meaningful together with the
+   stage:
+   - `no targets` — the renderer is idle because nothing is selected. Not a render fault; check
+     step 4 instead.
+   - `no tessellator` / `no camera` / `no material` — a real rendering fault, and the stage names
+     which link broke.
+   - `not installed` / `bad arguments` — the hook never landed or was called with a bad
+     `ScreenContext`.
+   - `renderer error` carries the resolver's message when one is set.
+4. `matches: N block(s)` is non-zero when you are standing on the selected block. If it stays at
    zero after a full pass, the block pipeline is not seeing your dimension.
-4. `last draw vertices` is non-zero while a target exists.
-5. For entities, `matched classes` should name the class you picked. An empty list usually means
+5. `last draw vertices` is non-zero while a target exists.
+6. For entities, `matched classes` should name the class you picked. An empty list usually means
    `actor_manager_list` resolved to the wrong function.
+
+To test drawing without selecting anything, press **Debug: Render Test Box**. It draws one box at
+the player's feet on the next frame, through the same path a real highlight uses. If the box
+appears, the tessellator, material, camera and depth handling are all correct and any remaining
+problem is in the scan or the selection; if it does not, `renderer stage` names the broken link.
 
 ---
 

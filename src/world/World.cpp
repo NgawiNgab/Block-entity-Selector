@@ -32,6 +32,13 @@ constexpr std::size_t kBlockTypeNameInfoCandidates[] = {0x88, 0x90, 0x80, 0x98};
 constexpr std::size_t kNameInfoFullNameCandidates[] = {0x40, 0x38, 0x48, 0x30};
 constexpr std::size_t kHashedStringValueCandidates[] = {0x8, 0x10, 0x0};
 
+/// Actor rotation component, read as (pitch, yaw) in degrees.
+///
+/// Not a profile entry, because nothing has ever proven it: it is a literal that
+/// was already in this file. Keeping it named makes it obvious that it has no
+/// validation path beyond the mapping check at its use site.
+constexpr std::size_t kActorRotationOffset = 0x238;
+
 bool looksLikeIdentifier(const std::string& text) {
     if (text.size() < 2 || text.size() > 64) return false;
     if (text.find(':') == std::string::npos && text.find('_') == std::string::npos) return false;
@@ -190,8 +197,19 @@ void World::update(void* localPlayer, const Vec3& cameraPosition) {
     }
 
     // Look direction from the player rotation component (yaw, pitch in degrees).
-    const auto rotationComponent = sdk::fieldPointer(localPlayer, 0x238);
-    if (sdk::plausiblePointer(rotationComponent)) {
+    //
+    // 0x238 is a hardcoded literal, not a profile entry, so it has no proof path
+    // and cannot be allowed to dereference blind -- it was the last unchecked read
+    // in this function. Require the mapping, then require the values to be a
+    // plausible rotation before trusting them.
+    void* rotationComponent = nullptr;
+    if (space.readable(localPlayer, kActorRotationOffset + sizeof(void*))) {
+        const auto raw = sdk::fieldPointer(localPlayer, kActorRotationOffset);
+        if (sdk::plausiblePointer(raw) && space.readable(raw, sizeof(bes::sdk::Vec2))) {
+            rotationComponent = raw;
+        }
+    }
+    if (rotationComponent) {
         const auto* rotation = reinterpret_cast<const bes::sdk::Vec2*>(rotationComponent);
         if (std::isfinite(rotation->x) && std::isfinite(rotation->y) && std::fabs(rotation->x) <= 90.5f) {
             constexpr float kDegToRad = 3.14159265358979323846f / 180.f;

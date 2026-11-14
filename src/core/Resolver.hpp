@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -65,7 +66,13 @@ public:
     /// True when at least one offset candidate exists for the category.
     bool hasOffsetCandidates(OffId id) const;
 
-    const std::string& summary() const noexcept { return mSummary; }
+    /// The report body, copied under the lock.
+    ///
+    /// This used to return a reference. `summary()` is read from the launcher UI
+    /// thread (diagnostics dump) while `confirmOffset()` rebuilds the string from
+    /// the render thread, so a reference handed one thread a buffer the other was
+    /// rewriting. A copy costs a string and cannot tear.
+    std::string summary() const;
 
     /// Rebuilds the human readable report (used by the diagnostics dump).
     void refreshSummary();
@@ -74,6 +81,8 @@ private:
     Resolver() = default;
 
     void resolveOne(SigId id, std::string_view libraryName);
+    /// Rebuilds mSummary. Caller must hold mMutex.
+    void buildSummaryLocked();
     std::uintptr_t resolveVtableCandidate(const SigCandidate& candidate, std::string_view libraryName);
 
     std::uintptr_t mAddresses[SigCount]{};
@@ -87,6 +96,9 @@ private:
     std::string mSummary;
     std::size_t mResolvedCount = 0;
     bool mResolved = false;
+    /// Guards the offset tables and mSummary. Offsets are confirmed from the render
+    /// thread and read from the frame, scan and UI threads.
+    mutable std::mutex mMutex;
 };
 
 }

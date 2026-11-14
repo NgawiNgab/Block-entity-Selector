@@ -1,10 +1,12 @@
 #pragma once
 
+#include "render/RenderStage.hpp"
 #include "selection/Selection.hpp"
 #include "world/World.hpp"
 
 #include <bes/sdk/Types.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <vector>
@@ -46,7 +48,21 @@ public:
 
     std::uint64_t frames() const noexcept { return mFrames; }
     std::uint64_t lastDrawVertices() const noexcept { return mLastVertices; }
-    const char* lastError() const noexcept { return mLastError; }
+    /// Written by install() on the game-init thread and by selfTest() from the
+    /// menu thread, read by the diagnostics dump on the UI thread. Every value is
+    /// a string literal with static lifetime, so an atomic pointer is enough --
+    /// no copy, no allocation, no lock to order against the stage counter.
+    const char* lastError() const noexcept { return mLastError.load(std::memory_order_acquire); }
+
+    RenderStage lastStage() const;
+
+    /// Draws a fixed box at the player's feet, independent of the selection.
+    ///
+    /// Exists so "is rendering working?" can be answered without a target: if a
+    /// test box appears, the tessellator, material, camera and depth handling are
+    /// all correct and any remaining problem is in the scan or the selection. If
+    /// nothing appears, lastStage() says which link broke.
+    bool selfTest();
 
     /// Batched geometry for one frame.
     struct Geometry {
@@ -62,6 +78,8 @@ private:
     static void renderLevelDetour(void* levelRenderer, void* screenContext, void* a3);
 
     void draw(void* levelRenderer, void* screenContext);
+    /// Records the reason the current draw attempt is ending. Takes mStageMutex.
+    void noteStage(RenderStage stage);
     bool ensureMaterial();
     void emitLines(void* screenContext, void* tessellator, void* material, const Geometry& geometry,
                    const bes::sdk::Vec3& camera);
@@ -73,7 +91,17 @@ private:
     bool mInstalled = false;
     std::uint64_t mFrames = 0;
     std::uint64_t mLastVertices = 0;
-    const char* mLastError = "";
+    std::atomic<const char*> mLastError{""};
+
+    /// Counts the reason draw() returned, indexed by Stage. Written from the
+    /// render thread, read from the UI thread via the dump.
+    mutable std::mutex mStageMutex;
+    std::uint64_t mStageCounts[kRenderStageCount]{};
+    RenderStage mLastStage = RenderStage::NotInstalled;
+
+    /// Set by selfTest(); consumed by the next draw() so the test box goes through
+    /// exactly the same path as a real highlight rather than a parallel one.
+    std::atomic<bool> mPendingSelfTest{false};
 };
 
 }

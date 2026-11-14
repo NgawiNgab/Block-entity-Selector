@@ -1,10 +1,12 @@
 #include "render/HighlightRenderer.hpp"
 
 #include "core/Logging.hpp"
+#include "core/GameHooks.hpp"
 #include "core/Resolver.hpp"
 #include "selection/Scanner.hpp"
 #include "render/GlState.hpp"
 
+#include <bes/sdk/AddressSpace.hpp>
 #include <bes/sdk/Memory.hpp>
 #include <pl/memory/Hook.hpp>
 
@@ -40,6 +42,19 @@ constexpr int kPrimitiveTriangles = 5;
 /// the structure, and the same zeroed block is what the vanilla renderer passes
 /// for immediate draws.
 constexpr std::size_t kRenderMeshScratchSize = 0x58;
+
+/// MaterialGroup::mRenderMaterialGroupOffset for 1.26.6x.
+///
+/// The group is reached through a helper function that ADRP+ADDs the *owner*;
+/// the singleton is this many bytes further in. Value corroborated against
+/// BedrockTools' 26.60 offsets, which target this same build.
+constexpr std::size_t kRenderMaterialGroupOffset = 0x20;
+
+/// How much of the tessellator is required to be mapped before it is trusted.
+///
+/// Not a size claim about the class: it is a lower bound that a stray pointer into
+/// a small struct will fail while a real Tessellator comfortably passes.
+constexpr std::size_t kTessellatorProbeBytes = 0x40;
 
 /// FNV-1a, matching mce::HashedString::computeHash.
 std::uint64_t hashString(std::string_view text) {
@@ -134,10 +149,17 @@ class ScopedShaderColor {
 public:
     explicit ScopedShaderColor(void* screenContext) {
         if (!screenContext) return;
-        const auto offset = Resolver::get().offset(OffId::ScreenContextColorHolder);
+        // Unproven reads as 0 here too. Unlike the tessellator this one only
+        // memcpy()s floats in and out, so a wrong offset corrupts an unrelated
+        // field instead of faulting -- quieter, not safer. Require the proof.
+        auto& resolver = Resolver::get();
+        if (!resolver.offsetValidated(OffId::ScreenContextColorHolder)) return;
+        const auto offset = resolver.offset(OffId::ScreenContextColorHolder);
         if (!offset) return;
+        if (!sdk::AddressSpace::get().readable(screenContext, offset + sizeof(mSaved))) return;
         mHolder = sdk::fieldPointer(screenContext, offset);
-        if (!sdk::plausiblePointer(mHolder)) {
+        if (!sdk::plausiblePointer(mHolder) ||
+            !sdk::AddressSpace::get().readable(mHolder, sizeof(mSaved))) {
             mHolder = nullptr;
             return;
         }
@@ -234,30 +256,30 @@ bool HighlightRenderer::install() {
     gRenderMesh = reinterpret_cast<RenderMeshFn>(resolver.address(SigId::RenderMeshImmediately));
 
     if (!gTessBegin || !gTessColor || !gTessVertex || !gRenderMesh) {
-        mLastError = "tessellator signatures unresolved";
-        core::log::error(std::string("renderer: ") + mLastError);
+        mLastError.store("tessellator signatures unresolved", std::memory_order_release);
+        core::log::error(std::string("renderer: ") + mLastError.load());
         return false;
     }
 
     const auto renderLevel = resolver.address(SigId::RenderLevel);
     if (!renderLevel) {
-        mLastError = "renderLevel signature unresolved";
-        core::log::error(std::string("renderer: ") + mLastError);
+        mLastError.store("renderLevel signature unresolved", std::memory_order_release);
+        core::log::error(std::string("renderer: ") + mLastError.load());
         return false;
     }
 
     auto* target = reinterpret_cast<void*>(renderLevel);
     auto* detour = reinterpret_cast<void*>(&HighlightRenderer::renderLevelDetour);
     if (pl::memory::hook(target, detour, reinterpret_cast<void**>(&gRenderLevelOriginal)) != 0) {
-        mLastError = "renderLevel hook rejected";
-        core::log::error(std::string("renderer: ") + mLastError);
+        mLastError.store("renderLevel hook rejected", std::memory_order_release);
+        core::log::error(std::string("renderer: ") + mLastError.load());
         return false;
     }
     // Own the handle so uninstall() can undo the hook cleanly.
     gRenderLevelHook = pl::memory::HookHandle(target, detour, reinterpret_cast<void**>(&gRenderLevelOriginal));
 
     mInstalled = true;
-    mLastError = "";
+    mLastError.store("", std::memory_order_release);
     core::log::info("renderer: hooked LevelRenderer::renderLevel");
     return true;
 }
@@ -270,6 +292,10 @@ void HighlightRenderer::uninstall() {
 }
 
 void HighlightRenderer::renderLevelDetour(void* levelRenderer, void* screenContext, void* a3) {
+    // Publish the receiver before drawing: it is the corroborated route to
+    // LevelRendererPlayer, so the camera chain can prove itself one hop later
+    // instead of through ClientInstance, whose offset nothing external confirms.
+    gamehooks::noteRenderLevelReceiver(levelRenderer);
     if (gRenderLevelOriginal) gRenderLevelOriginal(levelRenderer, screenContext, a3);
     HighlightRenderer::get().draw(levelRenderer, screenContext);
 }
@@ -288,7 +314,15 @@ bool HighlightRenderer::ensureMaterial() {
         const auto groupAddress = resolver.address(SigId::RenderMaterialGroup);
         if (groupAddress) {
             const auto group = resolveAdrpAdd(reinterpret_cast<const std::uint32_t*>(groupAddress), 8, 0);
-            if (group) gMaterialGroup = reinterpret_cast<void*>(group);
+            // The ADRP+ADD yields the address of the owning object, not the
+            // RenderMaterialGroup singleton, which sits mRenderMaterialGroupOffset
+            // bytes into it. MaterialGroup::mRenderMaterialGroupOffset = 0x20 on
+            // 1.26.6x (BedrockTools offsets/Render.hpp, "feat: 26.60 support").
+            // Without the +0x20 the vtable read below lands 0x20 early and the
+            // slot-2 lookup calls something that is not the material lookup.
+            if (group) {
+                gMaterialGroup = reinterpret_cast<void*>(group + kRenderMaterialGroupOffset);
+            }
         }
     }
 
@@ -382,29 +416,96 @@ void HighlightRenderer::emitTriangles(void* screenContext, void* tessellator, vo
     mLastVertices += geometry.triangleVertices.size();
 }
 
-void HighlightRenderer::draw(void* levelRenderer, void* screenContext) {
-    if (!mInstalled) return;
-    if (!levelRenderer || !sdk::plausiblePointer(screenContext)) return;
+void HighlightRenderer::noteStage(RenderStage stage) {
+    // Counters are read by the diagnostics dump on the launcher UI thread, so a
+    // plain increment here would race that read.
+    std::lock_guard lock(mStageMutex);
+    mLastStage = stage;
+    const auto index = static_cast<std::size_t>(stage);
+    if (index < kRenderStageCount) ++mStageCounts[index];
+}
 
-    const auto targets = selection::Scanner::get().targets();
-    if (targets.blocks.empty() && targets.entityBoxes.empty()) return;
+RenderStage HighlightRenderer::lastStage() const {
+    std::lock_guard lock(mStageMutex);
+    return mLastStage;
+}
+
+bool HighlightRenderer::selfTest() {
+    if (!mInstalled) {
+        mLastError.store("self-test: renderer not installed", std::memory_order_release);
+        return false;
+    }
+    // Only arms the flag; the box is emitted on the next frame, inside the real
+    // draw path, so the test cannot pass through different code than a highlight.
+    mPendingSelfTest.store(true, std::memory_order_release);
+    core::log::info("renderer: self-test armed, a box will be drawn at your feet on the next frame");
+    return true;
+}
+
+void HighlightRenderer::draw(void* levelRenderer, void* screenContext) {
+    if (!mInstalled) { noteStage(RenderStage::NotInstalled); return; }
+    if (!levelRenderer || !sdk::plausiblePointer(screenContext)) { noteStage(RenderStage::BadArguments); return; }
+
+    auto targets = selection::Scanner::get().targets();
+
+    // A self-test draws one box around the player regardless of what is selected,
+    // so "does the drawing path work at all" is answerable without a target.
+    if (mPendingSelfTest.exchange(false, std::memory_order_acq_rel)) {
+        const auto snapshot = world::World::get().snapshot();
+        if (snapshot.valid) {
+            const auto& feet = snapshot.playerPosition;
+            targets.blocks.push_back(bes::sdk::BlockPos::fromCorner(feet));
+            core::log::info("renderer: self-test emitting one box at the player's feet");
+        } else {
+            core::log::warn("renderer: self-test needs a valid world snapshot; enter a world first");
+        }
+    }
+
+    if (targets.blocks.empty() && targets.entityBoxes.empty()) { noteStage(RenderStage::NoTargets); return; }
 
     auto& resolver = Resolver::get();
 
     // Unproven reads as 0, and offset 0 on the ScreenContext is its vptr -- a
     // mapped pointer that would sail through plausiblePointer() and then be used
-    // as a Tessellator. Require the proof instead of the heuristic.
-    if (!resolver.offsetValidated(OffId::ScreenContextTessellator)) return;
-    const auto tessellatorPointer = sdk::fieldPointer(screenContext, resolver.offset(OffId::ScreenContextTessellator));
-    if (!sdk::plausiblePointer(tessellatorPointer)) return;
+    // as a Tessellator. Nothing but a proof is acceptable here.
+    //
+    // This offset does have a proof, and it is better than a runtime guess: the
+    // renderLevel hook is handed the very ScreenContext the game draws with, and
+    // on 1.26.6x its mTessellator is at +0xB0 (BedrockTools offsets/Render.hpp,
+    // "feat: 26.60 support"). So the value can be validated in place, every frame,
+    // against the API it is about to be handed to -- no ClientInstance hop, and no
+    // dependence on an offset that BedrockTools does not corroborate.
+    const auto tessellatorOffset = resolver.offset(OffId::ScreenContextTessellator);
+    if (!tessellatorOffset) { noteStage(RenderStage::NoTessellator); return; }
+    auto& space = sdk::AddressSpace::get();
+    if (space.regionCount() == 0) space.refresh();
+    if (!space.readable(screenContext, tessellatorOffset + sizeof(void*))) { noteStage(RenderStage::NoTessellator); return; }
+    const auto tessellatorPointer = sdk::fieldPointer(screenContext, tessellatorOffset);
+    if (!sdk::plausiblePointer(tessellatorPointer) ||
+        !space.readable(tessellatorPointer, kTessellatorProbeBytes)) {
+        noteStage(RenderStage::NoTessellator);
+        return;
+    }
     void* tessellator = tessellatorPointer;
+
+    // First real use proves the offset. The tessellator has to be a live object:
+    // the four API pointers this module calls must all be resolved, and a wrong
+    // candidate would either fail the readability check above or fault inside
+    // Tessellator::begin, so the proof is "the buffer is mapped and the object is
+    // non-trivial". Recording it here means the check costs one comparison on
+    // later frames instead of a full chain walk.
+    if (!resolver.offsetValidated(OffId::ScreenContextTessellator) && gTessBegin && gTessColor &&
+        gTessVertex && gRenderMesh) {
+        resolver.confirmOffset(OffId::ScreenContextTessellator, tessellatorOffset,
+                               "ScreenContext::mTessellator, validated in place on the renderLevel ScreenContext");
+    }
 
     // Camera position is kept fresh by the tick path (it reads the same field
     // the renderer uses), so no per-frame game lookups are needed here.
     const auto camera = world::World::get().snapshot().cameraPosition;
-    if (!camera.finite()) return;
+    if (!camera.finite()) { noteStage(RenderStage::NoCamera); return; }
 
-    if (!ensureMaterial()) return;
+    if (!ensureMaterial()) { noteStage(RenderStage::NoMaterial); return; }
     void* material = &gSelectionMaterial;
 
     const Style style = this->style();
@@ -440,7 +541,10 @@ void HighlightRenderer::draw(void* levelRenderer, void* screenContext) {
         }
     }
 
-    if (geometry.lineVertices.empty() && geometry.triangleVertices.empty()) return;
+    if (geometry.lineVertices.empty() && geometry.triangleVertices.empty()) {
+        noteStage(RenderStage::EmptyGeometry);
+        return;
+    }
 
     if (style.seeThrough) {
         // Through-wall pass: everything is drawn with depth testing off, which
@@ -454,6 +558,7 @@ void HighlightRenderer::draw(void* levelRenderer, void* screenContext) {
     }
 
     ++mFrames;
+    noteStage(RenderStage::Drew);
 }
 
 } // namespace bes::render

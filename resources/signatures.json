@@ -120,7 +120,8 @@
       "candidates": [
         {
           "offset": "0x430",
-          "note": "LevelRenderer::mLevelRendererPlayer"
+          "note": "LevelRenderer::mLevelRendererPlayer",
+          "origin": "LevelRenderer::mLevelRendererPlayer \u2014 matches BedrockTools offsets/Render.hpp (26.60)"
         }
       ]
     },
@@ -128,7 +129,8 @@
       "candidates": [
         {
           "offset": "0x614",
-          "note": "LevelRendererPlayer::mCamPos (float3)"
+          "note": "LevelRendererPlayer::mCamPos (float3)",
+          "origin": "LevelRendererPlayer::mCamPos \u2014 matches BedrockTools offsets/Render.hpp (26.60)"
         }
       ]
     },
@@ -136,7 +138,8 @@
       "candidates": [
         {
           "offset": "0x90",
-          "note": "ClientInstance::mLevelRenderer (candidate; validated by a readable vtable)"
+          "note": "ClientInstance::mLevelRenderer (candidate; validated by a readable vtable)",
+          "origin": "ClientInstance::mLevelRenderer \u2014 NOT corroborated: BedrockTools reaches LevelRenderer from the renderLevel hook argument instead"
         },
         {
           "offset": "0x88",
@@ -152,7 +155,8 @@
       "candidates": [
         {
           "offset": "0xB0",
-          "note": "ScreenContext::mTessellator"
+          "note": "ScreenContext::mTessellator",
+          "origin": "ScreenContext::mTessellator \u2014 matches BedrockTools offsets/Render.hpp (26.60)"
         }
       ]
     },
@@ -160,7 +164,8 @@
       "candidates": [
         {
           "offset": "0x30",
-          "note": "ScreenContext::mColorHolder (4 floats + dirty byte at +0x10)"
+          "note": "ScreenContext::mColorHolder (4 floats + dirty byte at +0x10)",
+          "origin": "ScreenContext::mColorHolder \u2014 matches BedrockTools offsets/Render.hpp (26.60); ShaderColor::mDirty at +0x10"
         }
       ]
     },
@@ -168,7 +173,8 @@
       "candidates": [
         {
           "offset": "0x228",
-          "note": "Actor::mStateVectorComponent (position at +0)"
+          "note": "Actor::mStateVectorComponent (position at +0)",
+          "origin": "Actor::mStateVectorComponent \u2014 matches BedrockTools offsets/World.hpp (26.60)"
         }
       ]
     },
@@ -176,7 +182,8 @@
       "candidates": [
         {
           "offset": "0x230",
-          "note": "Actor::mStateVectorComponent + 8 = AABBShapeComponent"
+          "note": "Actor::mStateVectorComponent + 8 = AABBShapeComponent",
+          "origin": "Actor::mStateVectorComponent(+0x228) + BuiltInActorComponents::mAABBShapeComponent(8) \u2014 matches BedrockTools (26.60)"
         }
       ]
     },
@@ -184,7 +191,8 @@
       "candidates": [
         {
           "offset": "0x1F0",
-          "note": "Actor::mLevel"
+          "note": "Actor::mLevel",
+          "origin": "Actor::mLevel \u2014 matches BedrockTools offsets/World.hpp (26.60)"
         }
       ]
     },
@@ -192,7 +200,8 @@
       "candidates": [
         {
           "offset": "0x1E0",
-          "note": "Actor::mDimension"
+          "note": "Actor::mDimension",
+          "origin": "Actor::mDimension \u2014 matches BedrockTools offsets/World.hpp (26.60)"
         }
       ]
     },
@@ -200,7 +209,8 @@
       "candidates": [
         {
           "offset": "0x478",
-          "note": "Level::mActorManager"
+          "note": "Level::mActorManager",
+          "origin": "Level::mActorManager \u2014 matches BedrockTools offsets/World.hpp (26.60)"
         }
       ]
     },
@@ -208,7 +218,8 @@
       "candidates": [
         {
           "offset": "0xD0",
-          "note": "Dimension::mBlockSource (candidate, validated against getDimensionId)"
+          "note": "Dimension::mBlockSource (candidate, validated against getDimensionId)",
+          "origin": "Dimension::mBlockSource \u2014 matches BedrockTools offsets/World.hpp (26.60)"
         },
         {
           "offset": "0xC8",

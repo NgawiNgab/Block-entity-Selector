@@ -299,7 +299,17 @@ void Runtime::onFrame() {
     // frame the highlight is drawn against, and it keeps ticking while the game is
     // paused, which the update hook does not.
     if (!mEnabled || !mLastPlayer) return;
-    modules::SelectorModule::get().onTick(mLastPlayer, nowMilliseconds());
+
+    // Sample the camera here, on the frame being drawn. `cameraPosition()` is the
+    // only consumer of the ClientInstance -> LevelRenderer -> LevelRendererPlayer
+    // -> cam-pos chain, so it is also where those three offsets prove themselves.
+    // It returns false until the whole chain validates, and the world layer then
+    // falls back to the player's eye position, which is correct in first person.
+    float camera[3]{};
+    const bool hasCamera = gamehooks::cameraPosition(camera);
+    modules::SelectorModule::get().onTick(mLastPlayer, nowMilliseconds(),
+                                         hasCamera ? bes::sdk::Vec3{camera[0], camera[1], camera[2]}
+                                                   : bes::sdk::Vec3{});
 }
 
 std::string Runtime::dumpDiagnostics() {
@@ -332,6 +342,40 @@ std::string Runtime::dumpDiagnostics() {
     // the difference between "the mod is idle because nothing matched" and "the
     // mod is idle because nothing has been proven on this build yet".
     report << "   offsets proven:   " << provenOffsets() << '/' << OffCount << '\n';
+    // A truncated memory map makes every guarded read answer "unmapped", which is
+    // indistinguishable from a wrong offset unless it is stated. Say it out loud.
+    {
+        auto& space = sdk::AddressSpace::get();
+        if (space.regionCount() == 0) space.refresh();
+        report << "   memory map:       " << space.regionCount() << " region(s)";
+        if (space.truncated()) {
+            report << "  TRUNCATED -- probe results below are unreliable";
+        }
+        report << '\n';
+    }
+    // Name the blocker. "offsets proven: 0/11" is a number; what a reader needs is
+    // which of the three goals it currently blocks, so that a dump with no visible
+    // effect is not mistaken for a mod that is doing something and finding nothing.
+    {
+        auto& resolver = Resolver::get();
+        const bool actorsReady = resolver.offsetValidated(OffId::ActorLevel) &&
+                                 resolver.offsetValidated(OffId::ActorDimension) &&
+                                 resolver.offsetValidated(OffId::LevelActorManager);
+        const bool blocksReady = actorsReady && resolver.offsetValidated(OffId::DimensionBlockSource);
+        const bool drawReady = resolver.offsetValidated(OffId::ScreenContextTessellator) &&
+                               resolver.offsetValidated(OffId::ScreenContextColorHolder) &&
+                               resolver.offsetValidated(OffId::LevelRendererPlayer) &&
+                               resolver.offsetValidated(OffId::LevelRendererPlayerCamPos);
+        report << "   blocked:          ";
+        if (actorsReady && blocksReady && drawReady) {
+            report << "nothing -- all three goals have their offsets\n";
+        } else {
+            if (!actorsReady) report << "entities(actor offsets) ";
+            if (!blocksReady) report << "blocks(block source) ";
+            if (!drawReady) report << "drawing(tessellator/camera) ";
+            report << '\n';
+        }
+    }
     report << "3. game hooks:       " << (mInstalled ? "installed" : "NOT installed") << '\n';
     report << "   frame tick:       " << (mFrameTickInstalled ? "installed" : "NOT installed") << '\n';
     report << "   local player:     " << (mLastPlayer ? "yes" : "NOT yet seen") << '\n';
@@ -340,8 +384,18 @@ std::string Runtime::dumpDiagnostics() {
     report << "   cmdline:          \"" << evidence.processName << "\"\n";
     report << "   comm:             \"" << evidence.processCom << "\"\n";
     report << "\nrenderer installed: " << (render::HighlightRenderer::get().installed() ? "yes" : "no") << '\n';
-    report << "renderer frames: " << render::HighlightRenderer::get().frames() << '\n';
-    report << "last draw vertices: " << render::HighlightRenderer::get().lastDrawVertices() << '\n';
+    {
+        auto& renderer = render::HighlightRenderer::get();
+        report << "renderer frames: " << renderer.frames() << '\n';
+        report << "last draw vertices: " << renderer.lastDrawVertices() << '\n';
+        // frames() only counts successful draws, so on its own it cannot say
+        // whether rendering is broken or simply has nothing to draw. The last
+        // stage says where the attempt stopped.
+        report << "renderer stage: " << render::renderStageName(renderer.lastStage()) << '\n';
+        // Read once: install() and selfTest() may update it between two calls.
+        const char* error = renderer.lastError();
+        report << "renderer error: " << (error[0] ? error : "none") << '\n';
+    }
     report << "selector enabled: " << (modules::SelectorModule::get().enabled() ? "yes" : "no") << '\n';
     report << "target: " << modules::SelectorModule::get().targetLabel() << '\n';
 

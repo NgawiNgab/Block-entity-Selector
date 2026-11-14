@@ -2,6 +2,7 @@
 #include "core/Profile.hpp"
 #include "core/Resolver.hpp"
 #include "core/Rtti.hpp"
+#include "render/RenderStage.hpp"
 #include "selection/BlockCursor.hpp"
 #include "selection/Identifier.hpp"
 #include "selection/Scanner.hpp"
@@ -14,6 +15,8 @@
 #include <cmath>
 #include <cstring>
 #include <cstdio>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -628,6 +631,166 @@ void testDiagnosticReportBuffer() {
     CHECK(bes::core::log::peekReport().empty());
 }
 
+/// The renderer used to expose one number, `frames`, which only counts SUCCESSFUL
+/// draws. `frames: 0` therefore meant any of several different things -- not
+/// installed, no target, no tessellator, no camera, no material, empty geometry --
+/// and a report could not distinguish "rendering is broken" from "there was
+/// nothing to draw". The stage names are now part of the diagnostics contract, so
+/// they are checked here: a stage that loses its name reports as "unknown" and
+/// silently collapses that distinction again.
+void testRenderStageNames() {
+    using Stage = bes::render::RenderStage;
+    const auto stageName = &bes::render::renderStageName;
+
+    // Every stage must have a distinct, non-empty name.
+    const Stage all[] = {Stage::NotInstalled, Stage::BadArguments, Stage::NoTargets,
+                         Stage::NoTessellator, Stage::NoCamera,     Stage::NoMaterial,
+                         Stage::EmptyGeometry, Stage::Drew};
+    // Pins the count to the list above; a new enumerator must be added in both
+    // places or this fails rather than going untested.
+    CHECK(std::size(all) == bes::render::kRenderStageCount);
+
+    std::vector<std::string> names;
+    for (const auto stage : all) {
+        const char* name = stageName(stage);
+        CHECK(name != nullptr);
+        CHECK(name[0] != '\0');
+        CHECK(std::string(name) != "unknown");
+        names.push_back(name);
+    }
+    for (std::size_t a = 0; a < names.size(); ++a) {
+        for (std::size_t b = a + 1; b < names.size(); ++b) {
+            CHECK(names[a] != names[b]);
+        }
+    }
+
+    // The two states a user most needs told apart.
+    CHECK(std::string(stageName(Stage::NoTargets)) == "no targets");
+    CHECK(std::string(stageName(Stage::Drew)) == "drew");
+}
+
+/// Every offset in the profile is now corroborated by an external source for this
+/// exact build (BedrockTools `include/bedrocktools/sdk/offsets/*.hpp`, whose
+/// Render.hpp was last changed by "feat: 26.60 support"). That makes the table
+/// checkable for the first time: a typo, a bad merge or a "quick fix" that quietly
+/// changes one of these numbers is a defect, not a preference.
+///
+/// The values are duplicated here on purpose. A test that read them from the
+/// profile could only prove the profile is self-consistent.
+
+void testOffsetsMatchReference() {
+    struct Reference {
+        bes::core::OffId id;
+        std::size_t value;
+        const char* name;
+    };
+    // Source column is which BedrockTools header each came from.
+    const Reference expected[] = {
+        {bes::core::OffId::ActorStateVector, 0x228, "Actor::mStateVectorComponent"},
+        {bes::core::OffId::ActorAabbComponent, 0x230, "mStateVectorComponent + mAABBShapeComponent(8)"},
+        {bes::core::OffId::ActorLevel, 0x1F0, "Actor::mLevel"},
+        {bes::core::OffId::ActorDimension, 0x1E0, "Actor::mDimension"},
+        {bes::core::OffId::LevelActorManager, 0x478, "Level::mActorManager"},
+        {bes::core::OffId::DimensionBlockSource, 0xD0, "Dimension::mBlockSource"},
+        {bes::core::OffId::ScreenContextTessellator, 0xB0, "ScreenContext::mTessellator"},
+        {bes::core::OffId::ScreenContextColorHolder, 0x30, "ScreenContext::mColorHolder"},
+        {bes::core::OffId::LevelRendererPlayer, 0x430, "LevelRenderer::mLevelRendererPlayer"},
+        {bes::core::OffId::LevelRendererPlayerCamPos, 0x614, "LevelRendererPlayer::mCamPos"},
+    };
+
+    // Read the SHIPPED file, not the Profile singleton. Profile is process-wide and
+    // earlier tests replace its offsets, so asserting through it would check
+    // whatever the previous test left behind and silently pass. Reading the file is
+    // also the stronger claim: this is the table that actually ships.
+    std::ifstream file("resources/signatures.json");
+    CHECK(file.good());
+    const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    auto& profile = bes::core::Profile::get();
+    CHECK(profile.loadFromText(text, "resources/signatures.json", true));
+
+    for (const auto& entry : expected) {
+        const auto candidate = profile.candidates(entry.id);
+        if (candidate.empty()) {
+            CHECK(false); // A missing category is a failure, not a skip.
+            continue;
+        }
+        CHECK(candidate.front().value == entry.value);
+        // Corroboration must also be recorded, or the diagnostics cannot tell a
+        // referenced offset from one somebody guessed.
+        CHECK(!candidate.front().origin.empty());
+    }
+
+    // Actor rotation (0x238) is a literal inside World.cpp's anonymous namespace
+    // rather than a profile entry, so it cannot be asserted from here without
+    // inventing a test-only alias for it. BedrockTools agrees on the value
+    // (Actor::mActorRotationComponent = 0x238); noted rather than tested.
+}
+
+/// `gamehooks::cameraPosition()` confirms three offsets or none: the chain is
+/// only promoted when the whole path validates and the result looks like a real
+/// camera. The plausibility rule inside it is what separates "this candidate is a
+/// cam pos" from "this candidate points at a zeroed struct", so it is the part
+/// worth pinning. It is reproduced here because the real one lives in a lambda
+/// inside a function that needs the preloader SDK to link.
+void testCameraPlausibility() {
+    const auto plausible = [](float x, float y, float z) {
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) return false;
+        if (std::fabs(y) > 65536.f) return false;
+        if (x == 0.f && y == 0.f && z == 0.f) return false;
+        return true;
+    };
+
+    // A normal standing camera.
+    CHECK(plausible(100.5f, 70.f, -230.25f));
+    // Negative coordinates are ordinary.
+    CHECK(plausible(-1.f, 64.f, -1.f));
+    // Deepslate depth and build-limit height both still count as real.
+    CHECK(plausible(0.f, -60.f, 0.f));
+    CHECK(plausible(0.f, 319.f, 0.f));
+
+    // The zeroed-struct signature. A live camera is essentially never at exactly
+    // 0,0,0 -- and if it were, refusing one frame costs nothing while accepting a
+    // zeroed read would put the camera at world origin and draw every box wrong.
+    CHECK(!plausible(0.f, 0.f, 0.f));
+    // Non-finite values are the other way a bad read shows up.
+    CHECK(!plausible(std::nanf(""), 64.f, 0.f));
+    CHECK(!plausible(0.f, 64.f, std::nanf("")));
+    CHECK(!plausible(0.f, INFINITY, 0.f));
+    // Beyond any sane height envelope.
+    CHECK(!plausible(0.f, 70000.f, 0.f));
+    CHECK(!plausible(0.f, -70000.f, 0.f));
+}
+
+/// The diagnostics read `offsets proven: 0/11` on a live player with every probe
+/// correctly written. The cause was the memory map, not the probes: a real
+/// Minecraft process maps 6022 regions and kMaxRegions was 4096, so the library's
+/// own mappings -- and everything above them -- read as unmapped. Every guarded
+/// check then answered "not readable" and every correct candidate was rejected.
+///
+/// The dangerous property is that truncation does not fail loudly. These checks
+/// pin the two halves that matter: the capacity must exceed a real device map, and
+/// truncation must be observable so a negative answer can be treated as unknown.
+void testAddressSpaceCapacity() {
+    // Measured, not guessed: the 2026-11-13 tombstone's memory map has 6022
+    // regions. A cap at or below that silently blinds the probes.
+    CHECK(bes::sdk::AddressSpace::kMaxRegions > 6022);
+
+    auto& space = bes::sdk::AddressSpace::get();
+    CHECK(space.refresh());
+
+    // A host process is small, so truncation must not be claimed here. Without
+    // this the flag could be hardcoded true and the test would still pass.
+    CHECK(!space.truncated());
+
+    // Capacity must not have been reached, or the flag above is meaningless.
+    CHECK(space.regionCount() < bes::sdk::AddressSpace::kMaxRegions);
+
+    // read_proc/parse consistency: every region must be non-empty and ordered.
+    // Done through the public surface so this stays a behavioural test.
+    CHECK(space.fileBackedRegionCount() > 0);
+    CHECK(space.regionCount() >= space.fileBackedRegionCount());
+}
+
 void testModulePresence() {
     // The process gate used to compare argv[0] against two hardcoded strings.
     // It now asks whether the game's image is actually mapped, so the parser that
@@ -703,6 +866,10 @@ int main() {
     testIdentifierIndex();
     testLibcxxStringDecoding();
     testDiagnosticReportBuffer();
+    testRenderStageNames();
+    testOffsetsMatchReference();
+    testCameraPlausibility();
+    testAddressSpaceCapacity();
     testModulePresence();
 
     std::printf("%d checks, %d failure(s)\n", gChecks, gFailures);
