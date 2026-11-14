@@ -358,13 +358,19 @@ void World::probeActorLevelAndDimension(void* localPlayer) {
                 if (!space.readable(level, candidate.value + sizeof(void*))) continue;
                 void* const manager = sdk::fieldPointer(level, candidate.value);
                 if (!readableObject(manager)) continue;
-                // This hands `manager` to a game function, so "mapped" is not
-                // enough: a wrong candidate that happens to point at any readable
-                // object would be called as a Level. The RTTI check is what tells
-                // a Level from a std::string body, and it is the only proof
-                // available without Zaphkiel.
-                if (!classNamed(manager, "Level")) continue;
-                if (classNamed(manager, "Renderer") || classNamed(manager, "Chunk")) continue;
+                // `manager` is an ActorManager, NOT a Level: BedrockTools reaches
+                // it as Level + Level::mActorManager and passes it straight to
+                // getRuntimeActorList, so a class-name check for "Level" here would
+                // reject the correct object.
+                //
+                // What makes the call survivable is the two things already
+                // established above: `level` was RTTI-confirmed as a Level (the
+                // ActorLevel offset is validated before this block runs), and the
+                // offset being probed is corroborated by BedrockTools for this
+                // build. A wrong *candidate* is the residual risk, and it is caught
+                // by the post-call check below rather than by trusting the pointer.
+                // Tightening this further needs the ActorManager RTTI name, which
+                // is currently unverified -- see the Zaphkiel request.
                 std::vector<void*> list;
                 try {
                     list = gGetActorList(manager);
