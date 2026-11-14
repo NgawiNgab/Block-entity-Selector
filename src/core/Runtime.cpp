@@ -353,6 +353,29 @@ std::string Runtime::dumpDiagnostics() {
         }
         report << '\n';
     }
+    // Name the blocker. "offsets proven: 0/11" is a number; what a reader needs is
+    // which of the three goals it currently blocks, so that a dump with no visible
+    // effect is not mistaken for a mod that is doing something and finding nothing.
+    {
+        auto& resolver = Resolver::get();
+        const bool actorsReady = resolver.offsetValidated(OffId::ActorLevel) &&
+                                 resolver.offsetValidated(OffId::ActorDimension) &&
+                                 resolver.offsetValidated(OffId::LevelActorManager);
+        const bool blocksReady = actorsReady && resolver.offsetValidated(OffId::DimensionBlockSource);
+        const bool drawReady = resolver.offsetValidated(OffId::ScreenContextTessellator) &&
+                               resolver.offsetValidated(OffId::ScreenContextColorHolder) &&
+                               resolver.offsetValidated(OffId::LevelRendererPlayer) &&
+                               resolver.offsetValidated(OffId::LevelRendererPlayerCamPos);
+        report << "   blocked:          ";
+        if (actorsReady && blocksReady && drawReady) {
+            report << "nothing -- all three goals have their offsets\n";
+        } else {
+            if (!actorsReady) report << "entities(actor offsets) ";
+            if (!blocksReady) report << "blocks(block source) ";
+            if (!drawReady) report << "drawing(tessellator/camera) ";
+            report << '\n';
+        }
+    }
     report << "3. game hooks:       " << (mInstalled ? "installed" : "NOT installed") << '\n';
     report << "   frame tick:       " << (mFrameTickInstalled ? "installed" : "NOT installed") << '\n';
     report << "   local player:     " << (mLastPlayer ? "yes" : "NOT yet seen") << '\n';

@@ -149,9 +149,9 @@ bool SelectorModule::registerInMenu(const std::string& modId) {
     builder.config("outlineOnly", "Outline Only", pl::modmenu::ConfigType::Toggle, "true");
     builder.config("fillAlpha", "Fill Opacity", pl::modmenu::ConfigType::SliderFloat, "0.18", "0.02", "0.6");
     builder.config("clearSelection", "Clear Selection", pl::modmenu::ConfigType::Button, "false");
-    builder.config("rescan", "Rescan Now", pl::modmenu::ConfigType::Button, "false");
+    builder.config("rescan", "Clear Cached Scan", pl::modmenu::ConfigType::Button, "false");
     builder.config("diagnostics", "Diagnostics Dump", pl::modmenu::ConfigType::Button, "false");
-    builder.config("probeBlockType", "Probe BlockType", pl::modmenu::ConfigType::Button, "false");
+    builder.config("probeBlockType", "Debug: Dump Block Layout", pl::modmenu::ConfigType::Button, "false");
 
     if (!builder.registerModule()) {
         core::log::error("menu: registration rejected by the launcher");
@@ -244,14 +244,14 @@ bool SelectorModule::registerInMenu(const std::string& modId) {
     toggle("showBlocks", "scan", "Scan Blocks", "true");
     toggle("includePlayers", "scan", "Include Players", "true");
     button("clearSelection", "selection", "Clear Selection");
-    button("rescan", "scan", "Rescan Now");
+    button("rescan", "scan", "Clear Cached Scan");
     button("diagnostics", "debug", "Dump Diagnostics");
     schema.node(node("clearSelection", "clearSelection", "selection", "Clear Selection",
                      pl::modmenu::ConfigControlTypeV2::Button));
-    schema.node(node("rescan", "rescan", "scan", "Rescan Now", pl::modmenu::ConfigControlTypeV2::Button));
+    schema.node(node("rescan", "rescan", "scan", "Clear Cached Scan", pl::modmenu::ConfigControlTypeV2::Button));
     schema.node(node("diagnostics", "diagnostics", "debug", "Dump Diagnostics",
                      pl::modmenu::ConfigControlTypeV2::Button));
-    schema.node(node("probeBlockType", "probeBlockType", "debug", "Probe BlockType",
+    schema.node(node("probeBlockType", "probeBlockType", "debug", "Debug: Dump Block Layout",
                      pl::modmenu::ConfigControlTypeV2::Button));
 
     if (!pl::modmenu::setConfigSchemaJson(mModuleId, schema.toJson())) {
