@@ -392,7 +392,9 @@ std::string Runtime::dumpDiagnostics() {
         // whether rendering is broken or simply has nothing to draw. The last
         // stage says where the attempt stopped.
         report << "renderer stage: " << render::renderStageName(renderer.lastStage()) << '\n';
-        report << "renderer error: " << (renderer.lastError()[0] ? renderer.lastError() : "none") << '\n';
+        // Read once: install() and selfTest() may update it between two calls.
+        const char* error = renderer.lastError();
+        report << "renderer error: " << (error[0] ? error : "none") << '\n';
     }
     report << "selector enabled: " << (modules::SelectorModule::get().enabled() ? "yes" : "no") << '\n';
     report << "target: " << modules::SelectorModule::get().targetLabel() << '\n';

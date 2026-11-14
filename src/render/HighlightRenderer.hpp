@@ -48,7 +48,11 @@ public:
 
     std::uint64_t frames() const noexcept { return mFrames; }
     std::uint64_t lastDrawVertices() const noexcept { return mLastVertices; }
-    const char* lastError() const noexcept { return mLastError; }
+    /// Written by install() on the game-init thread and by selfTest() from the
+    /// menu thread, read by the diagnostics dump on the UI thread. Every value is
+    /// a string literal with static lifetime, so an atomic pointer is enough --
+    /// no copy, no allocation, no lock to order against the stage counter.
+    const char* lastError() const noexcept { return mLastError.load(std::memory_order_acquire); }
 
     RenderStage lastStage() const;
 
@@ -87,7 +91,7 @@ private:
     bool mInstalled = false;
     std::uint64_t mFrames = 0;
     std::uint64_t mLastVertices = 0;
-    const char* mLastError = "";
+    std::atomic<const char*> mLastError{""};
 
     /// Counts the reason draw() returned, indexed by Stage. Written from the
     /// render thread, read from the UI thread via the dump.

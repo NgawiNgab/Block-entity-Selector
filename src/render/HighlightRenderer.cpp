@@ -256,30 +256,30 @@ bool HighlightRenderer::install() {
     gRenderMesh = reinterpret_cast<RenderMeshFn>(resolver.address(SigId::RenderMeshImmediately));
 
     if (!gTessBegin || !gTessColor || !gTessVertex || !gRenderMesh) {
-        mLastError = "tessellator signatures unresolved";
-        core::log::error(std::string("renderer: ") + mLastError);
+        mLastError.store("tessellator signatures unresolved", std::memory_order_release);
+        core::log::error(std::string("renderer: ") + mLastError.load());
         return false;
     }
 
     const auto renderLevel = resolver.address(SigId::RenderLevel);
     if (!renderLevel) {
-        mLastError = "renderLevel signature unresolved";
-        core::log::error(std::string("renderer: ") + mLastError);
+        mLastError.store("renderLevel signature unresolved", std::memory_order_release);
+        core::log::error(std::string("renderer: ") + mLastError.load());
         return false;
     }
 
     auto* target = reinterpret_cast<void*>(renderLevel);
     auto* detour = reinterpret_cast<void*>(&HighlightRenderer::renderLevelDetour);
     if (pl::memory::hook(target, detour, reinterpret_cast<void**>(&gRenderLevelOriginal)) != 0) {
-        mLastError = "renderLevel hook rejected";
-        core::log::error(std::string("renderer: ") + mLastError);
+        mLastError.store("renderLevel hook rejected", std::memory_order_release);
+        core::log::error(std::string("renderer: ") + mLastError.load());
         return false;
     }
     // Own the handle so uninstall() can undo the hook cleanly.
     gRenderLevelHook = pl::memory::HookHandle(target, detour, reinterpret_cast<void**>(&gRenderLevelOriginal));
 
     mInstalled = true;
-    mLastError = "";
+    mLastError.store("", std::memory_order_release);
     core::log::info("renderer: hooked LevelRenderer::renderLevel");
     return true;
 }
@@ -432,7 +432,7 @@ RenderStage HighlightRenderer::lastStage() const {
 
 bool HighlightRenderer::selfTest() {
     if (!mInstalled) {
-        mLastError = "self-test: renderer not installed";
+        mLastError.store("self-test: renderer not installed", std::memory_order_release);
         return false;
     }
     // Only arms the flag; the box is emitted on the next frame, inside the real
